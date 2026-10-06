@@ -1,5 +1,3 @@
-/* 서울기술교육센터 AIoT */
-/* author : KSH */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
