@@ -22,7 +22,7 @@ import cv2
 SERVER_IP = "10.10.16.74"   # 실제 서버 IP에 맞게 수정
 SERVER_PORT = 5000
 
-CLIENT_ID = "PJS_JET"
+CLIENT_ID = "PJS_SQL"
 PASSWORD = "PASSWD"
 
 
