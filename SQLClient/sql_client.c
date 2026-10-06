@@ -1,5 +1,3 @@
-/* 서울기술 교육센터 IoT */
-/* author : KSH */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -177,8 +175,8 @@ void * recv_msg(void * arg)
 			else
 				finish_with_error(con);
 		}
-		//req:[KSH_ARD]GETDB@LAMP
-		//res:[KSH_ARD]GETDB@LAMP@ON
+		//req:[PJS_ARD]GETDB@LAMP
+		//res:[{PJS_ARD]GETDB@LAMP@ON
 		else if(!strcmp(pArray[1],"GETDB"))
 		{
 			sprintf(sql_cmd,"SELECT value FROM device WHERE name='%s'",pArray[2]);
@@ -192,8 +190,8 @@ void * recv_msg(void * arg)
 			sprintf(sql_cmd,"[%s]%s@%s@%s\n",pArray[0],pArray[1],pArray[2],row[0]);
 			write(*sock, sql_cmd, strlen(sql_cmd));
 		}
-		//req:[KSH_ARD]SETDB@LAMP@ON
-		//res:[KSH_ARD]GETDB@LAMP@ON
+		//req:[PJS_ARD]SETDB@LAMP@ON
+		//res:[PJS_ARD]GETDB@LAMP@ON
 		else if(!strcmp(pArray[1],"SETDB"))
 		{
 			sprintf(sql_cmd,"UPDATE device SET value='%s', date=now(), time=now() WHERE name='%s'", pArray[3], pArray[2]);
