@@ -350,7 +350,7 @@ try:
 
                 send_msg = (
                     f"[{CLIENT_ID}]"
-                    f"{current_class}\n"
+                    f"STATUS@{current_class}\n"
                 )
 
                 try:
