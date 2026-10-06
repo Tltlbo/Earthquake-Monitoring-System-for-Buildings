@@ -58,7 +58,7 @@ try:
     )
 
     # 기존 C 클라이언트와 동일한 로그인 방식
-    login_msg = f"[{CLIENT_ID}:{PASSWORD}]"
+    login_msg = f"[PJS_JET:{PASSWORD}]"
 
     client_socket.sendall(
         login_msg.encode()
