@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -16,10 +17,9 @@
 #define ARR_CNT 20
 
 /* =========================================================
- * 센서 클라이언트 ID
+ * STM32 Client ID
  * ========================================================= */
 #define SENSOR_CLIENT_ID "PJS_STM"
-
 
 /* =========================================================
  * 데이터 유효 시간
@@ -27,23 +27,29 @@
 #define SENSOR_TIMEOUT_SEC 1.0
 #define JETSON_TIMEOUT_SEC 3.0
 
+/* =========================================================
+ * MPU6050
+ *
+ * 현재 STM32에서는 ACCEL_CONFIG를 별도로 변경하지 않으므로
+ * 기본 ±2g 범위 기준으로 사용
+ *
+ * ±2g -> 16384 LSB/g
+ * ========================================================= */
+#define MPU6050_1G_RAW 16384.0f
 
 /* =========================================================
- * 지진 판정 임계값
+ * 가속도 판정 임계값
  *
- * 주의:
- * 아래 값은 예시값.
- * 실제 센서 측정값을 보고 보정해야 함.
+ * 실제 측정 후 반드시 튜닝 필요
  * ========================================================= */
-#define GYRO_CAUTION_THRESHOLD  2.0f
-#define GYRO_WARNING_THRESHOLD  5.0f
+#define ACCEL_CAUTION_THRESHOLD 2000.0f
+#define ACCEL_WARNING_THRESHOLD 5000.0f
 
-#define VIBRATION_CAUTION_THRESHOLD 1
-#define VIBRATION_WARNING_THRESHOLD 2
-
-#define MOTOR_CAUTION_THRESHOLD 20.0f
-#define MOTOR_WARNING_THRESHOLD 40.0f
-
+/* =========================================================
+ * Servo
+ * ========================================================= */
+#define SERVO_LOCK_ANGLE       0
+#define SERVO_RELEASE_ANGLE  180
 
 /* =========================================================
  * 지진 상태
@@ -56,25 +62,18 @@ typedef enum
 
 } EarthquakeLevel;
 
-
 /* =========================================================
  * Sensor Data
+ *
+ * STM32 Packet
+ *
+ * [STM32]SENSOR@AX@AY@AZ@VIBRATION
  * ========================================================= */
 typedef struct
 {
-    float motor1;
-    float motor2;
-    float motor3;
-    float motor4;
-
-    float motor5;
-    float motor6;
-    float motor7;
-    float motor8;
-
-    float gyro_x;
-    float gyro_y;
-    float gyro_z;
+    int16_t accel_x;
+    int16_t accel_y;
+    int16_t accel_z;
 
     int vibration;
 
@@ -85,7 +84,6 @@ typedef struct
     int valid;
 
 } SensorData;
-
 
 /* =========================================================
  * Jetson Data
@@ -99,7 +97,6 @@ typedef struct
     int valid;
 
 } JetsonData;
-
 
 /* =========================================================
  * 함수 선언
@@ -154,7 +151,7 @@ void control_servos(
 
 void send_servo_command(
     int sock,
-    int angle
+    const char *command
 );
 
 void save_database(
@@ -168,7 +165,6 @@ const char *earthquake_level_string(
     EarthquakeLevel level
 );
 
-
 /* =========================================================
  * Global
  * ========================================================= */
@@ -179,18 +175,27 @@ SensorData latest_sensor = {0};
 JetsonData latest_jetson = {0};
 
 /*
- * SENSOR 하나가 중복 처리되는 것을 방지
+ * 현재 서보 상태
+ *
+ * LOCK    = 0
+ * RELEASE = 180
+ *
+ * DB의 motor1 ~ motor8에 이 값을 저장한다.
+ */
+int current_servo_angle = SERVO_LOCK_ANGLE;
+
+/*
+ * SENSOR 중복 처리 방지
  */
 unsigned long last_processed_sensor_sequence = 0;
-
 
 /*
  * 이전 지진 상태
  *
- * 상태가 바뀌었을 때만 Servo 명령 전송
+ * 지진 상태가 바뀌었을 때만
+ * STM32로 서보 제어 명령 전송
  */
 EarthquakeLevel previous_level = -1;
-
 
 /*
  * send thread / recv thread가
@@ -198,7 +203,6 @@ EarthquakeLevel previous_level = -1;
  */
 pthread_mutex_t socket_mutex =
     PTHREAD_MUTEX_INITIALIZER;
-
 
 /* =========================================================
  * MAIN
@@ -214,7 +218,6 @@ int main(int argc, char *argv[])
 
     void *thread_return;
 
-
     if(argc != 4)
     {
         printf(
@@ -225,14 +228,12 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-
     snprintf(
         name,
         sizeof(name),
         "%s",
         argv[3]
     );
-
 
     /* =====================================================
      * Socket 생성
@@ -243,7 +244,6 @@ int main(int argc, char *argv[])
         0
     );
 
-
     if(sock == -1)
     {
         error_handling(
@@ -251,27 +251,22 @@ int main(int argc, char *argv[])
         );
     }
 
-
     memset(
         &serv_addr,
         0,
         sizeof(serv_addr)
     );
 
-
     serv_addr.sin_family =
         AF_INET;
 
-
     serv_addr.sin_addr.s_addr =
         inet_addr(argv[1]);
-
 
     serv_addr.sin_port =
         htons(
             atoi(argv[2])
         );
-
 
     /* =====================================================
      * 서버 연결
@@ -289,7 +284,6 @@ int main(int argc, char *argv[])
         );
     }
 
-
     /* =====================================================
      * 로그인
      * ===================================================== */
@@ -300,12 +294,10 @@ int main(int argc, char *argv[])
         name
     );
 
-
     socket_send(
         sock,
         msg
     );
-
 
     /* =====================================================
      * Thread 시작
@@ -317,7 +309,6 @@ int main(int argc, char *argv[])
         (void *)&sock
     );
 
-
     pthread_create(
         &snd_thread,
         NULL,
@@ -325,19 +316,15 @@ int main(int argc, char *argv[])
         (void *)&sock
     );
 
-
     pthread_join(
         snd_thread,
         &thread_return
     );
 
-
     close(sock);
-
 
     return 0;
 }
-
 
 /* =========================================================
  * Socket Send
@@ -351,19 +338,16 @@ void socket_send(
         &socket_mutex
     );
 
-
     write(
         sock,
         data,
         strlen(data)
     );
 
-
     pthread_mutex_unlock(
         &socket_mutex
     );
 }
-
 
 /* =========================================================
  * Keyboard Send Thread
@@ -384,23 +368,19 @@ void *send_msg(void *arg)
         NAME_SIZE + BUF_SIZE + 2
     ];
 
-
     FD_ZERO(
         &initset
     );
-
 
     FD_SET(
         STDIN_FILENO,
         &initset
     );
 
-
     fputs(
         "Input a message! [ID]msg (Default ID:ALLMSG)\n",
         stdout
     );
-
 
     while(1)
     {
@@ -410,21 +390,17 @@ void *send_msg(void *arg)
             sizeof(msg)
         );
 
-
         memset(
             name_msg,
             0,
             sizeof(name_msg)
         );
 
-
         tv.tv_sec = 1;
         tv.tv_usec = 0;
 
-
         newset =
             initset;
-
 
         ret =
             select(
@@ -435,6 +411,15 @@ void *send_msg(void *arg)
                 &tv
             );
 
+        if(ret < 0)
+        {
+            if(*sock == -1)
+            {
+                return NULL;
+            }
+
+            continue;
+        }
 
         if(
             FD_ISSET(
@@ -449,7 +434,6 @@ void *send_msg(void *arg)
                 stdin
             );
 
-
             if(
                 !strncmp(
                     msg,
@@ -463,7 +447,6 @@ void *send_msg(void *arg)
                 return NULL;
             }
 
-
             else if(msg[0] != '[')
             {
                 strcat(
@@ -471,13 +454,11 @@ void *send_msg(void *arg)
                     "[ALLMSG]"
                 );
 
-
                 strcat(
                     name_msg,
                     msg
                 );
             }
-
 
             else
             {
@@ -487,13 +468,11 @@ void *send_msg(void *arg)
                 );
             }
 
-
             socket_send(
                 *sock,
                 name_msg
             );
         }
-
 
         if(ret == 0)
         {
@@ -505,37 +484,29 @@ void *send_msg(void *arg)
     }
 }
 
-
 /* =========================================================
  * Receive Thread
  *
- * TCP는 read() 1번 = packet 1개가 아님.
- *
- * 따라서 반드시 송신 데이터 끝에 \n을 붙이는 방식 권장.
+ * TCP는 read() 1번 = packet 1개가 아니므로
+ * '\n' 기준으로 packet을 조립한다.
  *
  * 예:
  *
- * [PJS_SQL]SENSOR@...\n
- * [PJS_SQL]STATUS@WARNING\n
+ * [STM32]SENSOR@100@200@16000@1\n
+ * [PJS_JET]STATUS@WARNING\n
  * ========================================================= */
 void *recv_msg(void *arg)
 {
     int *sock =
         (int *)arg;
 
-
     MYSQL *con;
-
 
     /* =====================================================
      * DB 연결
-     *
-     * 매 패킷마다 connect하지 않고
-     * 한번 연결 후 계속 사용
      * ===================================================== */
     con =
         mysql_init(NULL);
-
 
     if(con == NULL)
     {
@@ -546,7 +517,6 @@ void *recv_msg(void *arg)
 
         return NULL;
     }
-
 
     if(
         mysql_real_connect(
@@ -568,36 +538,29 @@ void *recv_msg(void *arg)
         );
     }
 
-
     printf(
         "MySQL Connected\n"
     );
-
 
     char recv_buffer[
         BUF_SIZE + 1
     ];
 
-
     char packet_buffer[
         BUF_SIZE * 5
     ];
 
-
     int packet_len = 0;
-
 
     while(1)
     {
         int str_len;
-
 
         memset(
             recv_buffer,
             0,
             sizeof(recv_buffer)
         );
-
 
         str_len =
             read(
@@ -606,23 +569,19 @@ void *recv_msg(void *arg)
                 BUF_SIZE
             );
 
-
         if(str_len <= 0)
         {
             *sock = -1;
-
 
             mysql_close(
                 con
             );
 
-
             return NULL;
         }
 
-
         /* =================================================
-         * TCP 누적
+         * TCP packet 누적
          * ================================================= */
         for(
             int j = 0;
@@ -633,9 +592,8 @@ void *recv_msg(void *arg)
             char c =
                 recv_buffer[j];
 
-
             /*
-             * 한 packet 종료
+             * '\n' = packet 종료
              */
             if(c == '\n')
             {
@@ -643,9 +601,8 @@ void *recv_msg(void *arg)
                     packet_len
                 ] = '\0';
 
-
                 /*
-                 * \r 제거
+                 * CRLF 대응
                  */
                 if(
                     packet_len > 0 &&
@@ -659,7 +616,6 @@ void *recv_msg(void *arg)
                     ] = '\0';
                 }
 
-
                 if(packet_len > 0)
                 {
                     process_packet(
@@ -669,10 +625,8 @@ void *recv_msg(void *arg)
                     );
                 }
 
-
                 packet_len = 0;
             }
-
 
             else
             {
@@ -686,13 +640,11 @@ void *recv_msg(void *arg)
                     ] = c;
                 }
 
-
                 else
                 {
                     printf(
                         "Packet Buffer Overflow\n"
                     );
-
 
                     packet_len = 0;
                 }
@@ -701,21 +653,17 @@ void *recv_msg(void *arg)
     }
 }
 
-
 /* =========================================================
  * Packet Parsing
  *
- * SENSOR
+ * STM32:
  *
- * [PJS_STM]SENSOR@
- * M1@M2@M3@M4@
- * M5@M6@M7@M8@
- * GX@GY@GZ@
- * vibration
+ * [STM32]SENSOR@AX@AY@AZ@VIBRATION
  *
+ * Jetson:
  *
- * Jetson
- *
+ * [PJS_JET]STATUS@SAFETY
+ * [PJS_JET]STATUS@CAUTION
  * [PJS_JET]STATUS@WARNING
  *
  * ========================================================= */
@@ -729,17 +677,13 @@ void process_packet(
         BUF_SIZE * 5
     ];
 
-
     char *pArray[
         ARR_CNT
     ] = {0};
 
-
     char *pToken;
 
-
     int count = 0;
-
 
     snprintf(
         packet_copy,
@@ -748,26 +692,23 @@ void process_packet(
         packet
     );
 
-
     printf(
         "\nRX : %s\n",
         packet_copy
     );
 
-
     /*
+     * delimiter:
+     *
      * [
      * ]
      * @
-     *
-     * delimiter
      */
     pToken =
         strtok(
             packet_copy,
             "[@]"
         );
-
 
     while(
         pToken != NULL &&
@@ -777,14 +718,12 @@ void process_packet(
         pArray[count++] =
             pToken;
 
-
         pToken =
             strtok(
                 NULL,
                 "[@]"
             );
     }
-
 
     if(count < 2)
     {
@@ -795,21 +734,18 @@ void process_packet(
         return;
     }
 
-
     printf(
         "ID  : %s\n",
         pArray[0]
     );
-
 
     printf(
         "CMD : %s\n",
         pArray[1]
     );
 
-
     /* =====================================================
-     * SENSOR
+     * STM32 SENSOR
      * ===================================================== */
     if(
         !strcmp(
@@ -825,7 +761,6 @@ void process_packet(
             count
         );
     }
-
 
     /* =====================================================
      * Jetson Status
@@ -845,7 +780,6 @@ void process_packet(
         );
     }
 
-
     /* =====================================================
      * 기존 GETDB
      * ===================================================== */
@@ -857,13 +791,13 @@ void process_packet(
     )
     {
         if(count < 3)
+        {
             return;
-
+        }
 
         char sql_cmd[
             200
         ];
-
 
         snprintf(
             sql_cmd,
@@ -875,7 +809,6 @@ void process_packet(
 
             pArray[2]
         );
-
 
         if(
             mysql_query(
@@ -893,12 +826,10 @@ void process_packet(
             return;
         }
 
-
         MYSQL_RES *result =
             mysql_store_result(
                 con
             );
-
 
         if(result == NULL)
         {
@@ -911,12 +842,10 @@ void process_packet(
             return;
         }
 
-
         MYSQL_ROW row =
             mysql_fetch_row(
                 result
             );
-
 
         if(row != NULL)
         {
@@ -932,19 +861,16 @@ void process_packet(
                 row[0]
             );
 
-
             socket_send(
                 sock,
                 sql_cmd
             );
         }
 
-
         mysql_free_result(
             result
         );
     }
-
 
     /* =====================================================
      * 기존 SETDB
@@ -957,13 +883,13 @@ void process_packet(
     )
     {
         if(count < 4)
+        {
             return;
-
+        }
 
         char sql_cmd[
             200
         ];
-
 
         snprintf(
             sql_cmd,
@@ -978,7 +904,6 @@ void process_packet(
             pArray[3],
             pArray[2]
         );
-
 
         if(
             mysql_query(
@@ -996,7 +921,6 @@ void process_packet(
             return;
         }
 
-
         snprintf(
             sql_cmd,
             sizeof(sql_cmd),
@@ -1008,7 +932,6 @@ void process_packet(
             pArray[3]
         );
 
-
         socket_send(
             sock,
             sql_cmd
@@ -1016,30 +939,21 @@ void process_packet(
     }
 }
 
-
 /* =========================================================
- * SENSOR 처리
+ * STM32 SENSOR 처리
+ *
+ * Packet:
+ *
+ * [STM32]SENSOR@AX@AY@AZ@VIBRATION
  *
  * pArray
  *
- * 0  = ID
- * 1  = SENSOR
- *
- * 2  = motor1
- * 3  = motor2
- * 4  = motor3
- * 5  = motor4
- *
- * 6  = motor5
- * 7  = motor6
- * 8  = motor7
- * 9  = motor8
- *
- * 10 = gyro_x
- * 11 = gyro_y
- * 12 = gyro_z
- *
- * 13 = vibration
+ * 0 = STM32
+ * 1 = SENSOR
+ * 2 = accel_x
+ * 3 = accel_y
+ * 4 = accel_z
+ * 5 = vibration
  *
  * ========================================================= */
 void process_sensor(
@@ -1049,7 +963,7 @@ void process_sensor(
     int count
 )
 {
-    if(count < 14)
+    if(count < 6)
     {
         printf(
             "SENSOR Packet Error : count=%d\n",
@@ -1059,125 +973,48 @@ void process_sensor(
         return;
     }
 
-
-    latest_sensor.motor1 =
-        atof(
+    latest_sensor.accel_x =
+        (int16_t)atoi(
             pArray[2]
         );
 
-
-    latest_sensor.motor2 =
-        atof(
+    latest_sensor.accel_y =
+        (int16_t)atoi(
             pArray[3]
         );
 
-
-    latest_sensor.motor3 =
-        atof(
+    latest_sensor.accel_z =
+        (int16_t)atoi(
             pArray[4]
         );
 
-
-    latest_sensor.motor4 =
-        atof(
-            pArray[5]
-        );
-
-
-    latest_sensor.motor5 =
-        atof(
-            pArray[6]
-        );
-
-
-    latest_sensor.motor6 =
-        atof(
-            pArray[7]
-        );
-
-
-    latest_sensor.motor7 =
-        atof(
-            pArray[8]
-        );
-
-
-    latest_sensor.motor8 =
-        atof(
-            pArray[9]
-        );
-
-
-    latest_sensor.gyro_x =
-        atof(
-            pArray[10]
-        );
-
-
-    latest_sensor.gyro_y =
-        atof(
-            pArray[11]
-        );
-
-
-    latest_sensor.gyro_z =
-        atof(
-            pArray[12]
-        );
-
-
     latest_sensor.vibration =
         atoi(
-            pArray[13]
+            pArray[5]
         );
-
 
     latest_sensor.timestamp =
         get_time_sec();
 
-
     latest_sensor.sequence++;
 
-
     latest_sensor.valid = 1;
-
 
     printf(
         "\n===== SENSOR UPDATE =====\n"
     );
 
-
     printf(
-        "MOTOR : "
-        "%.2f %.2f %.2f %.2f "
-        "%.2f %.2f %.2f %.2f\n",
-
-        latest_sensor.motor1,
-        latest_sensor.motor2,
-        latest_sensor.motor3,
-        latest_sensor.motor4,
-
-        latest_sensor.motor5,
-        latest_sensor.motor6,
-        latest_sensor.motor7,
-        latest_sensor.motor8
+        "ACCEL : %d %d %d\n",
+        latest_sensor.accel_x,
+        latest_sensor.accel_y,
+        latest_sensor.accel_z
     );
-
-
-    printf(
-        "GYRO  : %.3f %.3f %.3f\n",
-
-        latest_sensor.gyro_x,
-        latest_sensor.gyro_y,
-        latest_sensor.gyro_z
-    );
-
 
     printf(
         "VIB   : %d\n",
         latest_sensor.vibration
     );
-
 
     /*
      * Jetson 데이터와 통합 가능한지 확인
@@ -1187,7 +1024,6 @@ void process_sensor(
         con
     );
 }
-
 
 /* =========================================================
  * Jetson STATUS 처리
@@ -1212,6 +1048,22 @@ void process_status(
         return;
     }
 
+    /*
+     * 허용된 STATUS만 처리
+     */
+    if(
+        strcmp(pArray[2], "SAFETY") != 0 &&
+        strcmp(pArray[2], "CAUTION") != 0 &&
+        strcmp(pArray[2], "WARNING") != 0
+    )
+    {
+        printf(
+            "Unknown Jetson STATUS : %s\n",
+            pArray[2]
+        );
+
+        return;
+    }
 
     snprintf(
         latest_jetson.status,
@@ -1220,24 +1072,19 @@ void process_status(
         pArray[2]
     );
 
-
     latest_jetson.timestamp =
         get_time_sec();
 
-
     latest_jetson.valid = 1;
-
 
     printf(
         "\n===== JETSON UPDATE =====\n"
     );
 
-
     printf(
         "STATUS : %s\n",
         latest_jetson.status
     );
-
 
     /*
      * SENSOR가 먼저 와있을 수도 있으므로
@@ -1249,7 +1096,6 @@ void process_status(
     );
 }
 
-
 /* =========================================================
  * SENSOR + JETSON 통합
  * ========================================================= */
@@ -1259,7 +1105,8 @@ void try_process_integrated_data(
 )
 {
     /*
-     * 둘 다 한번 이상 수신해야 함
+     * SENSOR와 Jetson STATUS가 모두
+     * 한번 이상 들어와야 판단 가능
      */
     if(
         !latest_sensor.valid ||
@@ -1269,9 +1116,8 @@ void try_process_integrated_data(
         return;
     }
 
-
     /*
-     * 이미 처리한 SENSOR 샘플
+     * 이미 처리한 SENSOR 샘플이면 종료
      */
     if(
         latest_sensor.sequence ==
@@ -1281,23 +1127,19 @@ void try_process_integrated_data(
         return;
     }
 
-
     double now =
         get_time_sec();
-
 
     double sensor_age =
         now -
         latest_sensor.timestamp;
 
-
     double jetson_age =
         now -
         latest_jetson.timestamp;
 
-
     /*
-     * 오래된 센서 데이터
+     * 오래된 SENSOR 데이터
      */
     if(
         sensor_age >
@@ -1312,9 +1154,8 @@ void try_process_integrated_data(
         return;
     }
 
-
     /*
-     * 오래된 Jetson 상태
+     * 오래된 Jetson 데이터
      */
     if(
         jetson_age >
@@ -1329,7 +1170,6 @@ void try_process_integrated_data(
         return;
     }
 
-
     /* =====================================================
      * 지진 판단
      * ===================================================== */
@@ -1339,7 +1179,6 @@ void try_process_integrated_data(
             &latest_jetson
         );
 
-
     printf(
         "\n"
         "========================================\n"
@@ -1347,44 +1186,22 @@ void try_process_integrated_data(
         "========================================\n"
     );
 
-
     printf(
-        "Motor : "
-        "%.2f %.2f %.2f %.2f "
-        "%.2f %.2f %.2f %.2f\n",
-
-        latest_sensor.motor1,
-        latest_sensor.motor2,
-        latest_sensor.motor3,
-        latest_sensor.motor4,
-
-        latest_sensor.motor5,
-        latest_sensor.motor6,
-        latest_sensor.motor7,
-        latest_sensor.motor8
+        "Accel     : %d %d %d\n",
+        latest_sensor.accel_x,
+        latest_sensor.accel_y,
+        latest_sensor.accel_z
     );
-
-
-    printf(
-        "Gyro      : %.3f %.3f %.3f\n",
-
-        latest_sensor.gyro_x,
-        latest_sensor.gyro_y,
-        latest_sensor.gyro_z
-    );
-
 
     printf(
         "Vibration : %d\n",
         latest_sensor.vibration
     );
 
-
     printf(
         "Jetson    : %s\n",
         latest_jetson.status
     );
-
 
     printf(
         "Result    : %s\n",
@@ -1393,35 +1210,14 @@ void try_process_integrated_data(
         )
     );
 
-
-    printf(
-        "========================================\n\n"
-    );
-
-
-    /* =====================================================
-     * DB 저장
-     * ===================================================== */
-    save_database(
-        con,
-        &latest_sensor,
-        &latest_jetson,
-        level
-    );
-
-
     /*
-     * 이 SENSOR는 처리 완료
-     */
-    last_processed_sensor_sequence =
-        latest_sensor.sequence;
-
-
-    /* =====================================================
-     * SERVO 제어
+     * 중요:
      *
-     * 상태가 바뀌었을 때만 명령 전송
-     * ===================================================== */
+     * 상태가 바뀌었을 때 먼저 서보 상태를 결정한다.
+     *
+     * 그래야 아래 DB 저장에서
+     * 현재 판단 결과에 해당하는 0 / 180이 저장된다.
+     */
     if(
         level !=
         previous_level
@@ -1432,37 +1228,71 @@ void try_process_integrated_data(
             level
         );
 
-
         previous_level =
             level;
     }
-}
 
+    printf(
+        "Servo     : %d deg\n",
+        current_servo_angle
+    );
+
+    printf(
+        "========================================\n\n"
+    );
+
+    /* =====================================================
+     * DB 저장
+     *
+     * 기존 DB 구조 유지
+     *
+     * motor1 ~ motor8
+     *      -> 현재 servo angle
+     *
+     * gyro_x/y/z
+     *      -> 실제 accel_x/y/z
+     * ===================================================== */
+    save_database(
+        con,
+        &latest_sensor,
+        &latest_jetson,
+        level
+    );
+
+    /*
+     * SENSOR 처리 완료
+     */
+    last_processed_sensor_sequence =
+        latest_sensor.sequence;
+}
 
 /* =========================================================
  * 지진 판단
  *
- * 여러 센서를 score 방식으로 통합
+ * 현재 사용 데이터
  *
- * 예시:
+ * 1. Jetson Detection
+ * 2. Vibration Sensor
+ * 3. MPU6050 Accelerometer
  *
- * Jetson WARNING  +4
- * Jetson CAUTION  +2
+ * 점수:
  *
- * Vibration 위험 +4
- * Vibration 주의 +2
+ * Jetson
+ * WARNING : +4
+ * CAUTION : +2
  *
- * Gyro 위험      +4
- * Gyro 주의      +2
+ * Vibration
+ * 감지     : +2
  *
- * Motor 편차 위험 +3
- * Motor 편차 주의 +1
+ * Acceleration
+ * WARNING : +4
+ * CAUTION : +2
  *
  * 총점
  *
- * 0~2  : SAFETY
- * 3~5  : CAUTION
- * >=6  : WARNING
+ * 0 ~ 2 : SAFETY
+ * 3 ~ 5 : CAUTION
+ * >= 6  : WARNING
  * ========================================================= */
 EarthquakeLevel detect_earthquake(
     SensorData *sensor,
@@ -1470,7 +1300,6 @@ EarthquakeLevel detect_earthquake(
 )
 {
     int score = 0;
-
 
     /* =====================================================
      * Jetson
@@ -1485,7 +1314,6 @@ EarthquakeLevel detect_earthquake(
         score += 4;
     }
 
-
     else if(
         !strcmp(
             jetson->status,
@@ -1496,140 +1324,69 @@ EarthquakeLevel detect_earthquake(
         score += 2;
     }
 
-
     /* =====================================================
      * Vibration
+     *
+     * 현재 STM32 SHOCK 값:
+     * 0 / 1
+     *
+     * 현재는 1 = 감지로 가정
      * ===================================================== */
     if(
-        sensor->vibration >=
-        VIBRATION_WARNING_THRESHOLD
-    )
-    {
-        score += 4;
-    }
-
-
-    else if(
-        sensor->vibration >=
-        VIBRATION_CAUTION_THRESHOLD
+        sensor->vibration == 1
     )
     {
         score += 2;
     }
 
-
     /* =====================================================
-     * Gyro
+     * Accelerometer
+     *
+     * MPU6050 ±2g 기본 범위:
+     *
+     * 1g ≈ 16384 raw
+     *
+     * 기울기에 영향을 덜 받게 하기 위해
+     * XYZ magnitude를 계산한 후
+     * 1g에서 벗어난 정도를 사용
      * ===================================================== */
-    float gyro_magnitude =
+    float ax =
+        (float)sensor->accel_x;
+
+    float ay =
+        (float)sensor->accel_y;
+
+    float az =
+        (float)sensor->accel_z;
+
+    float accel_magnitude =
         sqrtf(
-            sensor->gyro_x *
-            sensor->gyro_x
-
-            +
-
-            sensor->gyro_y *
-            sensor->gyro_y
-
-            +
-
-            sensor->gyro_z *
-            sensor->gyro_z
+            ax * ax +
+            ay * ay +
+            az * az
         );
 
+    float accel_delta =
+        fabsf(
+            accel_magnitude -
+            MPU6050_1G_RAW
+        );
 
     if(
-        gyro_magnitude >=
-        GYRO_WARNING_THRESHOLD
+        accel_delta >=
+        ACCEL_WARNING_THRESHOLD
     )
     {
         score += 4;
     }
 
-
     else if(
-        gyro_magnitude >=
-        GYRO_CAUTION_THRESHOLD
+        accel_delta >=
+        ACCEL_CAUTION_THRESHOLD
     )
     {
         score += 2;
     }
-
-
-    /* =====================================================
-     * Motor 8개 편차
-     * ===================================================== */
-    float motors[8] =
-    {
-        sensor->motor1,
-        sensor->motor2,
-        sensor->motor3,
-        sensor->motor4,
-
-        sensor->motor5,
-        sensor->motor6,
-        sensor->motor7,
-        sensor->motor8
-    };
-
-
-    float motor_min =
-        motors[0];
-
-
-    float motor_max =
-        motors[0];
-
-
-    for(
-        int i = 1;
-        i < 8;
-        i++
-    )
-    {
-        if(
-            motors[i] <
-            motor_min
-        )
-        {
-            motor_min =
-                motors[i];
-        }
-
-
-        if(
-            motors[i] >
-            motor_max
-        )
-        {
-            motor_max =
-                motors[i];
-        }
-    }
-
-
-    float motor_diff =
-        motor_max -
-        motor_min;
-
-
-    if(
-        motor_diff >=
-        MOTOR_WARNING_THRESHOLD
-    )
-    {
-        score += 3;
-    }
-
-
-    else if(
-        motor_diff >=
-        MOTOR_CAUTION_THRESHOLD
-    )
-    {
-        score += 1;
-    }
-
 
     /* =====================================================
      * Debug
@@ -1638,36 +1395,37 @@ EarthquakeLevel detect_earthquake(
         "\n===== EARTHQUAKE CHECK =====\n"
     );
 
-
     printf(
         "Jetson Status : %s\n",
         jetson->status
     );
-
 
     printf(
         "Vibration     : %d\n",
         sensor->vibration
     );
 
-
     printf(
-        "Gyro Mag      : %.3f\n",
-        gyro_magnitude
+        "Accel XYZ     : %d %d %d\n",
+        sensor->accel_x,
+        sensor->accel_y,
+        sensor->accel_z
     );
 
-
     printf(
-        "Motor Diff    : %.3f\n",
-        motor_diff
+        "Accel Mag     : %.3f\n",
+        accel_magnitude
     );
 
+    printf(
+        "Accel Delta   : %.3f\n",
+        accel_delta
+    );
 
     printf(
         "Score         : %d\n",
         score
     );
-
 
     /* =====================================================
      * 최종 판단
@@ -1678,11 +1436,9 @@ EarthquakeLevel detect_earthquake(
             "Decision      : WARNING\n"
         );
 
-
         return
             EARTHQUAKE_WARNING;
     }
-
 
     else if(score >= 3)
     {
@@ -1690,119 +1446,108 @@ EarthquakeLevel detect_earthquake(
             "Decision      : CAUTION\n"
         );
 
-
         return
             EARTHQUAKE_CAUTION;
     }
-
 
     printf(
         "Decision      : SAFETY\n"
     );
 
-
     return
         EARTHQUAKE_SAFETY;
 }
 
-
 /* =========================================================
  * Servo Control
  *
- * 현재 요구사항:
+ * SAFETY
+ *    -> LOCK
+ *    -> 0 degree
  *
- * 정상 → 0도
- * 지진 감지 → 180도
+ * CAUTION
+ *    -> LOCK
+ *    -> 0 degree
  *
- * 여기서는 WARNING만 실제 지진으로 판단.
- *
- * CAUTION은 아직 0도 유지.
+ * WARNING
+ *    -> RELEASE
+ *    -> 180 degree
  * ========================================================= */
 void control_servos(
     int sock,
     EarthquakeLevel level
 )
 {
-    int angle;
-
-
     if(
         level ==
         EARTHQUAKE_WARNING
     )
     {
-        angle = 180;
-
-
         printf(
             "\n!!! EARTHQUAKE DETECTED !!!\n"
         );
-    }
 
+        /*
+         * 먼저 프로그램 내부 상태 변경
+         */
+        current_servo_angle =
+            SERVO_RELEASE_ANGLE;
+
+        /*
+         * STM32 명령
+         */
+        send_servo_command(
+            sock,
+            "RELEASE"
+        );
+    }
 
     else
     {
-        angle = 0;
+        current_servo_angle =
+            SERVO_LOCK_ANGLE;
+
+        send_servo_command(
+            sock,
+            "LOCK"
+        );
     }
-
-
-    send_servo_command(
-        sock,
-        angle
-    );
 }
-
 
 /* =========================================================
  * Servo Command Send
  *
  * 정상:
  *
- * [PJS_STM]SERVOS@0@0@0@0@0@0@0@0
- *
+ * [PJS_STM]SERVOS@LOCK
  *
  * 지진:
  *
- * [PJS_STM]SERVOS@180@180@180@180@180@180@180@180
+ * [PJS_STM]SERVOS@RELEASE
  * ========================================================= */
 void send_servo_command(
     int sock,
-    int angle
+    const char *command
 )
 {
     char send_buf[
         BUF_SIZE
     ];
 
-
     snprintf(
         send_buf,
         sizeof(send_buf),
 
-        "[%s]"
-        "SERVOS@"
-        "%d@%d@%d@%d@"
-        "%d@%d@%d@%d\n",
+        "[%s]SERVOS@%s\n",
 
         SENSOR_CLIENT_ID,
-
-        angle,
-        angle,
-        angle,
-        angle,
-
-        angle,
-        angle,
-        angle,
-        angle
+        command
     );
-
 
     printf(
-        "\nSERVO TX : %s",
+        "SERVO TX : %s",
         send_buf
     );
-
 
     socket_send(
         sock,
@@ -1810,25 +1555,53 @@ void send_servo_command(
     );
 }
 
-
 /* =========================================================
  * Database Save
  *
- * Table:
+ * ★ DB TABLE 구조는 기존 그대로 사용
  *
- * sensor_logs
+ * 기존 컬럼:
  *
  * record_date
  *
- * motor1 ~ motor8
+ * motor1
+ * motor2
+ * motor3
+ * motor4
+ * motor5
+ * motor6
+ * motor7
+ * motor8
  *
  * gyro_x
  * gyro_y
  * gyro_z
  *
  * vibration
+ * jetson_status
+ *
+ *
+ * 실제 저장 의미:
+ *
+ * motor1 ~ motor8
+ *      = 현재 Servo 명령 각도
+ *      = LOCK    -> 0
+ *      = RELEASE -> 180
+ *
+ * gyro_x
+ *      = 실제 accel_x
+ *
+ * gyro_y
+ *      = 실제 accel_y
+ *
+ * gyro_z
+ *      = 실제 accel_z
+ *
+ * vibration
+ *      = STM32 SHOCK
  *
  * jetson_status
+ *      = Jetson detection status
  *
  * ========================================================= */
 void save_database(
@@ -1841,7 +1614,6 @@ void save_database(
     char sql_cmd[
         700
     ];
-
 
     snprintf(
         sql_cmd,
@@ -1866,10 +1638,10 @@ void save_database(
 
         "NOW(), "
 
-        "%.2f, %.2f, %.2f, %.2f, "
-        "%.2f, %.2f, %.2f, %.2f, "
+        "%d, %d, %d, %d, "
+        "%d, %d, %d, %d, "
 
-        "%.4f, %.4f, %.4f, "
+        "%d, %d, %d, "
 
         "%d, "
 
@@ -1877,39 +1649,44 @@ void save_database(
 
         ")",
 
+        /*
+         * motor1 ~ motor8
+         *
+         * 현재 서보 명령 상태
+         */
+        current_servo_angle,
+        current_servo_angle,
+        current_servo_angle,
+        current_servo_angle,
 
-        sensor->motor1,
-        sensor->motor2,
-        sensor->motor3,
-        sensor->motor4,
+        current_servo_angle,
+        current_servo_angle,
+        current_servo_angle,
+        current_servo_angle,
 
-        sensor->motor5,
-        sensor->motor6,
-        sensor->motor7,
-        sensor->motor8,
-
-        sensor->gyro_x,
-        sensor->gyro_y,
-        sensor->gyro_z,
+        /*
+         * DB 컬럼 이름은 gyro지만
+         * 실제 데이터는 accelerometer
+         */
+        sensor->accel_x,
+        sensor->accel_y,
+        sensor->accel_z,
 
         sensor->vibration,
 
         jetson->status
     );
 
-
     printf(
         "\nSQL : %s\n",
         sql_cmd
     );
-
 
     int res =
         mysql_query(
             con,
             sql_cmd
         );
-
 
     if(!res)
     {
@@ -1927,7 +1704,6 @@ void save_database(
         );
     }
 
-
     else
     {
         fprintf(
@@ -1942,7 +1718,6 @@ void save_database(
     }
 }
 
-
 /* =========================================================
  * 현재 시간
  * ========================================================= */
@@ -1950,12 +1725,10 @@ double get_time_sec(void)
 {
     struct timespec ts;
 
-
     clock_gettime(
         CLOCK_MONOTONIC,
         &ts
     );
-
 
     return
         (double)ts.tv_sec
@@ -1963,7 +1736,6 @@ double get_time_sec(void)
         (double)ts.tv_nsec /
         1000000000.0;
 }
-
 
 /* =========================================================
  * 상태 문자열
@@ -1979,12 +1751,10 @@ const char *earthquake_level_string(
             return
                 "SAFETY";
 
-
         case EARTHQUAKE_CAUTION:
 
             return
                 "CAUTION";
-
 
         case EARTHQUAKE_WARNING:
 
@@ -1992,11 +1762,9 @@ const char *earthquake_level_string(
                 "WARNING";
     }
 
-
     return
         "UNKNOWN";
 }
-
 
 /* =========================================================
  * Error
@@ -2010,16 +1778,13 @@ void error_handling(
         stderr
     );
 
-
     fputc(
         '\n',
         stderr
     );
 
-
     exit(1);
 }
-
 
 /* =========================================================
  * MySQL Error
@@ -2036,11 +1801,9 @@ void finish_with_error(
         )
     );
 
-
     mysql_close(
         con
     );
-
 
     exit(1);
 }
