@@ -60,8 +60,8 @@ all: main-build
 main-build: earthquake_detection.elf secondary-outputs
 
 # Tool invocations
-earthquake_detection.elf earthquake_detection.map: $(OBJS) $(USER_OBJS) C:\Users\KCCISTC\Documents\stm32_src\earthquake_detection\STM32F411RETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "earthquake_detection.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\KCCISTC\Documents\stm32_src\earthquake_detection\STM32F411RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="earthquake_detection.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+earthquake_detection.elf earthquake_detection.map: $(OBJS) $(USER_OBJS) C:\Users\kccistc\Documents\Earthquake-Monitoring-System-for-Buildings\hardware\earthquake_detection\STM32F411RETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "earthquake_detection.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\kccistc\Documents\Earthquake-Monitoring-System-for-Buildings\hardware\earthquake_detection\STM32F411RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="earthquake_detection.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

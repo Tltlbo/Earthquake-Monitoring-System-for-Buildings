@@ -15,7 +15,7 @@
 #define PASS "@kcci603!"
 #define LOGID "CSH_ARD"
 #define PASSWD "PASSWD"
-#define DST_IP "10.10.16.88"
+#define DST_IP "10.10.16.74"
 #define DST_PORT 5000
 
 typedef struct _cb_data_t
