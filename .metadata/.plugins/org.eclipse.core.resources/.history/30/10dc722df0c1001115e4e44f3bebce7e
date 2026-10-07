@@ -672,7 +672,7 @@ void Send_Sensor_Data(void)
     shock = (uint8_t)HAL_GPIO_ReadPin(SHOCK_GPIO_Port, SHOCK_Pin);
 
     sprintf(sendBuf,
-            "[PJS_SQL]SENSOR@%d@%d@%d@%d\n",
+            "[STM32]SENSOR@%d@%d@%d@%d\n",
             accelX,
             accelY,
             accelZ,
