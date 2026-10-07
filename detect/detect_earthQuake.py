@@ -170,6 +170,9 @@ same_count = 0
 # 서버에 마지막으로 전송한 확정 상태
 confirmed_class = None
 
+# 마지막 전송 시간 (주기적 동기화용)
+last_send_time = 0.0
+
 
 # ============================================================
 # Main Loop
@@ -336,17 +339,17 @@ try:
         # 일정 프레임 이상 같은 결과가 나온 경우
         # ====================================================
 
+        current_time = time.time()
+
         if same_count >= STABLE_FRAME_COUNT:
 
-            # 이미 서버에 보낸 상태라면
-            # 다시 보내지 않음
-
-            if current_class != confirmed_class:
+            # 상태가 변경되었거나, 마지막 전송 후 1초가 경과했으면 전송 (주기적 동기화/하트비트)
+            if (current_class != confirmed_class) or (current_time - last_send_time >= 1.0):
 
                 # TCP 메시지 끝에 \n 추가
                 #
                 # 예:
-                # [PJS_JET]WARNING\n
+                # [PJS_SQL]STATUS@WARNING\n
 
                 send_msg = (
                     f"[{CLIENT_ID}]"
@@ -359,33 +362,35 @@ try:
                         send_msg.encode()
                     )
 
-                    print(
-                        "================================"
-                    )
-
-                    print(
-                        f"[TCP SEND] "
-                        f"{send_msg.strip()}"
-                    )
-
-                    print(
-                        f"[CONFIDENCE] "
-                        f"{confidence_score * 100:.1f}%"
-                    )
-
-                    print(
-                        f"[STABLE FRAME] "
-                        f"{same_count}"
-                    )
-
-                    print(
-                        "================================"
-                    )
+                    if current_class != confirmed_class:
+                        print(
+                            "================================"
+                        )
+                        print(
+                            f"[TCP SEND (STATE CHANGE)] "
+                            f"{send_msg.strip()}"
+                        )
+                        print(
+                            f"[CONFIDENCE] "
+                            f"{confidence_score * 100:.1f}%"
+                        )
+                        print(
+                            f"[STABLE FRAME] "
+                            f"{same_count}"
+                        )
+                        print(
+                            "================================"
+                        )
+                    else:
+                        print(
+                            f"[TCP HEARTBEAT] {send_msg.strip()}"
+                        )
 
                     # 서버에 전송한 상태 저장
                     confirmed_class = (
                         current_class
                     )
+                    last_send_time = current_time
 
                 except Exception as e:
 

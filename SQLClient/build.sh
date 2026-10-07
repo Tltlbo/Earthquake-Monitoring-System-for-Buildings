@@ -1,2 +1,2 @@
 #sudo apt-get install libmariadb-dev-compat
-gcc sql_client.c -o sql_client -lmysqlclient
+gcc central_client.c -o central_client -lpthread -lmysqlclient -lm
