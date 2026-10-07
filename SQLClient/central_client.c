@@ -19,13 +19,13 @@
 /* =========================================================
  * STM32 Client ID
  * ========================================================= */
-#define SENSOR_CLIENT_ID "PJS_STM"
+#define SENSOR_CLIENT_ID "CSH_ARD"
 
 /* =========================================================
- * 데이터 유효 시간
+ * 데이터 유효 시간 및 DB 저장 주기
  * ========================================================= */
-#define SENSOR_TIMEOUT_SEC 1.0
-#define JETSON_TIMEOUT_SEC 3.0
+#define SENSOR_TIMEOUT_SEC 3.0
+#define DB_SAVE_INTERVAL_SAFETY_SEC 3.0
 
 /* =========================================================
  * MPU6050
@@ -172,7 +172,11 @@ char name[NAME_SIZE] = "[Default]";
 char msg[BUF_SIZE];
 
 SensorData latest_sensor = {0};
-JetsonData latest_jetson = {0};
+JetsonData latest_jetson = {
+    .status = "SAFETY",
+    .timestamp = 0,
+    .valid = 1
+};
 
 /*
  * 현재 서보 상태
@@ -188,6 +192,16 @@ int current_servo_angle = SERVO_LOCK_ANGLE;
  * SENSOR 중복 처리 방지
  */
 unsigned long last_processed_sensor_sequence = 0;
+
+/*
+ * JETSON 상태 변경 감지
+ */
+char previous_jetson_status[20] = "";
+
+/*
+ * 마지막 DB 저장 시각
+ */
+double last_db_save_time = 0.0;
 
 /*
  * 이전 지진 상태
@@ -1049,16 +1063,30 @@ void process_status(
     }
 
     /*
+     * 공백 및 제어문자 제거
+     */
+    char clean_status[20] = {0};
+    int s_idx = 0;
+    for (int k = 0; pArray[2][k] != '\0' && s_idx < (int)sizeof(clean_status) - 1; k++) {
+        char ch = pArray[2][k];
+        if (ch != ' ' && ch != '\r' && ch != '\n' && ch != '\t') {
+            clean_status[s_idx++] = ch;
+        }
+    }
+    clean_status[s_idx] = '\0';
+
+    /*
      * 허용된 STATUS만 처리
      */
     if(
-        strcmp(pArray[2], "SAFETY") != 0 &&
-        strcmp(pArray[2], "CAUTION") != 0 &&
-        strcmp(pArray[2], "WARNING") != 0
+        strcmp(clean_status, "SAFETY") != 0 &&
+        strcmp(clean_status, "CAUTION") != 0 &&
+        strcmp(clean_status, "WARNING") != 0
     )
     {
         printf(
-            "Unknown Jetson STATUS : %s\n",
+            "Unknown Jetson STATUS : '%s' (raw: '%s')\n",
+            clean_status,
             pArray[2]
         );
 
@@ -1069,7 +1097,7 @@ void process_status(
         latest_jetson.status,
         sizeof(latest_jetson.status),
         "%s",
-        pArray[2]
+        clean_status
     );
 
     latest_jetson.timestamp =
@@ -1116,13 +1144,13 @@ void try_process_integrated_data(
         return;
     }
 
+    int is_new_sensor = (latest_sensor.sequence != last_processed_sensor_sequence);
+    int is_new_jetson = (strcmp(latest_jetson.status, previous_jetson_status) != 0);
+
     /*
-     * 이미 처리한 SENSOR 샘플이면 종료
+     * 새로운 SENSOR 샘플도 아니고, 새로운 Jetson 상태도 아니면 종료
      */
-    if(
-        latest_sensor.sequence ==
-        last_processed_sensor_sequence
-    )
+    if(!is_new_sensor && !is_new_jetson)
     {
         return;
     }
@@ -1155,20 +1183,9 @@ void try_process_integrated_data(
     }
 
     /*
-     * 오래된 Jetson 데이터
+     * Jetson 데이터는 상태 변경 시에만 전송되므로(이벤트 기반),
+     * 타임아웃으로 만료시키지 않고 마지막 수신된 상태를 계속 유지합니다.
      */
-    if(
-        jetson_age >
-        JETSON_TIMEOUT_SEC
-    )
-    {
-        printf(
-            "Jetson Data Stale : %.2f sec\n",
-            jetson_age
-        );
-
-        return;
-    }
 
     /* =====================================================
      * 지진 판단
@@ -1199,8 +1216,9 @@ void try_process_integrated_data(
     );
 
     printf(
-        "Jetson    : %s\n",
-        latest_jetson.status
+        "Jetson    : %s (age: %.1fs)\n",
+        latest_jetson.status,
+        jetson_age
     );
 
     printf(
@@ -1218,10 +1236,9 @@ void try_process_integrated_data(
      * 그래야 아래 DB 저장에서
      * 현재 판단 결과에 해당하는 0 / 180이 저장된다.
      */
-    if(
-        level !=
-        previous_level
-    )
+    int level_changed = (level != previous_level);
+
+    if(level_changed)
     {
         control_servos(
             sock,
@@ -1242,28 +1259,59 @@ void try_process_integrated_data(
     );
 
     /* =====================================================
-     * DB 저장
+     * DB 저장 주기 제어 (Rate Limiting)
      *
-     * 기존 DB 구조 유지
-     *
-     * motor1 ~ motor8
-     *      -> 현재 servo angle
-     *
-     * gyro_x/y/z
-     *      -> 실제 accel_x/y/z
+     * 1. 지진 발생(CAUTION / WARNING) 시에는 매 패킷 즉시 저장
+     * 2. 지진 상태가 바뀌었을 때(SAFETY <-> WARNING 등) 즉시 저장
+     * 3. 평상시(SAFETY)에는 DB_SAVE_INTERVAL_SAFETY_SEC 주기마다 1회 저장
      * ===================================================== */
-    save_database(
-        con,
-        &latest_sensor,
-        &latest_jetson,
-        level
-    );
+    int should_save_db = 0;
+
+    if (level != EARTHQUAKE_SAFETY)
+    {
+        should_save_db = 1;
+    }
+    else if (level_changed)
+    {
+        should_save_db = 1;
+    }
+    else if ((now - last_db_save_time) >= DB_SAVE_INTERVAL_SAFETY_SEC)
+    {
+        should_save_db = 1;
+    }
+
+    if (should_save_db)
+    {
+        save_database(
+            con,
+            &latest_sensor,
+            &latest_jetson,
+            level
+        );
+
+        last_db_save_time = now;
+    }
+    else
+    {
+        printf(
+            "DB SAVE Skipped (SAFETY interval: %.1fs / %.1fs)\n\n",
+            now - last_db_save_time,
+            (double)DB_SAVE_INTERVAL_SAFETY_SEC
+        );
+    }
 
     /*
-     * SENSOR 처리 완료
+     * 처리 상태 기록
      */
     last_processed_sensor_sequence =
         latest_sensor.sequence;
+
+    snprintf(
+        previous_jetson_status,
+        sizeof(previous_jetson_status),
+        "%s",
+        latest_jetson.status
+    );
 }
 
 /* =========================================================
