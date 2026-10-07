@@ -20,7 +20,7 @@
  * STM32 Client ID
  * ========================================================= */
 #define SENSOR_CLIENT_ID "CSH_ARD"
-
+#define BT_CLIENT_ID "PJS_STM"
 /* =========================================================
  * 데이터 유효 시간 및 DB 저장 주기
  * ========================================================= */
@@ -112,6 +112,13 @@ void socket_send(
     const char *data
 );
 
+void send_bluetooth_data(
+    int sock,
+    SensorData *sensor,
+    JetsonData *jetson,
+    EarthquakeLevel level
+);
+
 double get_time_sec(void);
 
 void process_packet(
@@ -155,6 +162,7 @@ void send_servo_command(
 );
 
 void save_database(
+    int sock,
     MYSQL *con,
     SensorData *sensor,
     JetsonData *jetson,
@@ -1280,9 +1288,9 @@ void try_process_integrated_data(
         should_save_db = 1;
     }
 
-    if (should_save_db)
-    {
+    if (should_save_db) {
         save_database(
+            sock,
             con,
             &latest_sensor,
             &latest_jetson,
@@ -1311,6 +1319,43 @@ void try_process_integrated_data(
         sizeof(previous_jetson_status),
         "%s",
         latest_jetson.status
+    );
+}
+
+void send_bluetooth_data(
+    int sock,
+    SensorData *sensor,
+    JetsonData *jetson,
+    EarthquakeLevel level
+)
+{
+    char send_buf[BUF_SIZE];
+
+    snprintf(
+        send_buf,
+        sizeof(send_buf),
+
+        "[%s]SENSOR@%d@%d@%d@%d@%s\n",
+
+        BT_CLIENT_ID,
+
+        sensor->accel_x,
+        sensor->accel_y,
+        sensor->accel_z,
+
+        sensor->vibration,
+
+        earthquake_level_string(level)
+    );
+
+    printf(
+        "BLUETOOTH TX : %s",
+        send_buf
+    );
+
+    socket_send(
+        sock,
+        send_buf
     );
 }
 
@@ -1653,6 +1698,7 @@ void send_servo_command(
  *
  * ========================================================= */
 void save_database(
+    int sock,
     MYSQL *con,
     SensorData *sensor,
     JetsonData *jetson,
@@ -1749,6 +1795,13 @@ void save_database(
             earthquake_level_string(
                 level
             )
+        );
+
+        send_bluetooth_data(
+        sock,
+        sensor,
+        jetson,
+        level
         );
     }
 

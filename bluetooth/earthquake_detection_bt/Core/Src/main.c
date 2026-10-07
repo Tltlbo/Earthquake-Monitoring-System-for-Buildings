@@ -60,6 +60,8 @@ UART_HandleTypeDef huart6;
 uint8_t btchar;
 volatile uint8_t btFlag = 0;
 char btData[50];
+char lcdLine1[17] = {0};
+char lcdLine2[17] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -69,7 +71,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void bluetooth_Event(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -115,6 +117,12 @@ int main(void)
   LCD_init(&hi2c1);
 
   LCD_writeStringXY(0, 0, "hello lcd");
+
+  printf("\r\n");
+  printf("====================\r\n");
+  printf("STM32 START\r\n");
+  printf("USART2 DEBUG OK\r\n");
+  printf("====================\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -124,8 +132,17 @@ int main(void)
     /* USER CODE END WHILE */
 	  if (btFlag)
 	  {
-		  LCD_writeStringXY(0, 0, btData);
-		  LCD_writeStringXY(1, 0, &btData[16]);
+
+	      bluetooth_Event();
+
+	      /*
+	       * 이전 글자가 남는 것 방지
+	       */
+	      LCD_writeStringXY(0, 0, "                ");
+	      LCD_writeStringXY(1, 0, "                ");
+
+	      LCD_writeStringXY(0, 0, lcdLine1);
+	      LCD_writeStringXY(1, 0, lcdLine2);
 
 	      btFlag = 0;
 	  }
@@ -263,7 +280,7 @@ static void MX_USART6_UART_Init(void)
 
   /* USER CODE END USART6_Init 1 */
   huart6.Instance = USART6;
-  huart6.Init.BaudRate = 115200;
+  huart6.Init.BaudRate = 9600;
   huart6.Init.WordLength = UART_WORDLENGTH_8B;
   huart6.Init.StopBits = UART_STOPBITS_1;
   huart6.Init.Parity = UART_PARITY_NONE;
@@ -310,53 +327,86 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void bluetooth_Event()
+void bluetooth_Event(void)
 {
+    int i = 0;
+    char *pToken;
+    char *pArray[ARR_CNT] = {0};
+    char recvBuf[CMD_SIZE] = {0};
 
-  int i=0;
-  char * pToken;
-  char * pArray[ARR_CNT]={0};
-  char recvBuf[CMD_SIZE]={0};
-  char sendBuf[CMD_SIZE]={0};
-  strcpy(recvBuf,btData);
+    strcpy(recvBuf, btData);
 
-  //printf("btData : %s\r\n",btData);
+    pToken = strtok(recvBuf, "[@]");
 
-  pToken = strtok(recvBuf,"[@]");
-  while(pToken != NULL)
-  {
-    pArray[i] =  pToken;
-    if(++i >= ARR_CNT)
-      break;
-    pToken = strtok(NULL,"[@]");
-  }
+    while (pToken != NULL && i < ARR_CNT)
+    {
+        pArray[i++] = pToken;
+        pToken = strtok(NULL, "[@]");
+    }
 
-  if(!strcmp(pArray[1],"SENSOR"))
-  {
-	  float x = strtof(pArray[2], NULL)/16384.0f;
-	  float y = strtof(pArray[3], NULL)/16384.0f;
-	  float z = strtof(pArray[4], NULL)/16384.0f;
-	  snprintf(btData, sizeof(btData),
-			  "X:%.1f Y:%.1f Z:%.1f\r\nSHOCK:%s DET:%s",
-			  x, y, z,
-			  pArray[5],
-			  pArray[6]);
+    /*
+     * [PJS_STM]SENSOR@AX@AY@AZ@VIB@LEVEL
+     *
+     * 0 : PJS_STM
+     * 1 : SENSOR
+     * 2 : AX
+     * 3 : AY
+     * 4 : AZ
+     * 5 : VIB
+     * 6 : LEVEL
+     */
+    if (i < 7)
+    {
+        return;
+    }
 
-  }
-  else if(!strncmp(pArray[1]," New conn",sizeof(" New conn")))
-  {
-      return;
-  }
-  else if(!strncmp(pArray[1]," Already log",sizeof(" Already log")))
-  {
-      return;
-  }
-  else
-      return;
+    if (strcmp(pArray[1], "SENSOR") != 0)
+    {
+        return;
+    }
 
-  sprintf(sendBuf,"[%s]%s@%s\n",pArray[0],pArray[1],pArray[2]);
-  HAL_UART_Transmit(&huart6, (uint8_t *)sendBuf, strlen(sendBuf), 0xFFFF);
+    float x = strtof(pArray[2], NULL) / 16384.0f;
+    float y = strtof(pArray[3], NULL) / 16384.0f;
+    float z = strtof(pArray[4], NULL) / 16384.0f;
 
+    char det = '?';
+
+    if (!strcmp(pArray[6], "SAFETY"))
+    {
+        det = 'S';
+    }
+    else if (!strcmp(pArray[6], "CAUTION"))
+    {
+        det = 'C';
+    }
+    else if (!strcmp(pArray[6], "WARNING"))
+    {
+        det = 'W';
+    }
+
+    /*
+     * 16x2 LCD
+     *
+     * 예:
+     * X-0.1 Y+0.2
+     * Z+1.0 S:0 D:S
+     */
+    snprintf(
+        lcdLine1,
+        sizeof(lcdLine1),
+        "X%+4.1f Y%+4.1f",
+        x,
+        y
+    );
+
+    snprintf(
+        lcdLine2,
+        sizeof(lcdLine2),
+        "Z%+4.1f S:%s D:%c",
+        z,
+        pArray[5],
+        det
+    );
 }
 /**
   * @brief  Retargets the C library printf function to the USART.
