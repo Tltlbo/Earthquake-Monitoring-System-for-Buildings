@@ -12,7 +12,7 @@
 
 #define BUF_SIZE 100
 #define NAME_SIZE 20
-#define ARR_CNT 5
+#define ARR_CNT 7
 
 void * send_msg(void * arg);
 void * recv_msg(void * arg);
