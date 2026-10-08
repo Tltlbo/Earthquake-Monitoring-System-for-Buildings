@@ -44,8 +44,8 @@
  *
  * 실제 측정 후 반드시 튜닝 필요
  * ========================================================= */
-#define ACCEL_CAUTION_THRESHOLD 2000.0f
-#define ACCEL_WARNING_THRESHOLD 5000.0f
+#define ACCEL_CAUTION_THRESHOLD 1500.0f
+#define ACCEL_WARNING_THRESHOLD 2500.0f
 
 /* =========================================================
  * Servo
