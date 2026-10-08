@@ -26,6 +26,8 @@
  * ========================================================= */
 #define SENSOR_TIMEOUT_SEC 3.0
 #define DB_SAVE_INTERVAL_SAFETY_SEC 3.0
+#define WARNING_HOLD_SEC 3.0
+#define SAFETY_HOLD_SEC 5.0
 
 /* =========================================================
  * MPU6050
@@ -169,6 +171,11 @@ void save_database(
     EarthquakeLevel level
 );
 
+void update_servo_with_delay(
+    int sock,
+    EarthquakeLevel level
+);
+
 const char *earthquake_level_string(
     EarthquakeLevel level
 );
@@ -219,6 +226,15 @@ double last_db_save_time = 0.0;
  */
 EarthquakeLevel previous_level = -1;
 
+// 현재 연속으로 관측 중인 지진 상태
+EarthquakeLevel pending_level = -1;
+
+// 해당 상태가 시작된 시간
+double pending_level_start_time = 0.0;
+
+// 마지막으로 서보에 적용한 상태
+EarthquakeLevel applied_servo_level = EARTHQUAKE_SAFETY;
+
 /*
  * send thread / recv thread가
  * 동시에 socket write 하는 것을 방지
@@ -229,8 +245,7 @@ pthread_mutex_t socket_mutex =
 /* =========================================================
  * MAIN
  * ========================================================= */
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     int sock;
 
     struct sockaddr_in serv_addr;
@@ -240,12 +255,8 @@ int main(int argc, char *argv[])
 
     void *thread_return;
 
-    if(argc != 4)
-    {
-        printf(
-            "Usage : %s <IP> <port> <name>\n",
-            argv[0]
-        );
+    if(argc != 4) {
+        printf("Usage : %s <IP> <port> <name>\n", argv[0]);
 
         exit(1);
     }
@@ -266,11 +277,8 @@ int main(int argc, char *argv[])
         0
     );
 
-    if(sock == -1)
-    {
-        error_handling(
-            "socket() error"
-        );
+    if(sock == -1) {
+        error_handling("socket() error");
     }
 
     memset(
@@ -279,16 +287,11 @@ int main(int argc, char *argv[])
         sizeof(serv_addr)
     );
 
-    serv_addr.sin_family =
-        AF_INET;
+    serv_addr.sin_family = AF_INET;
 
-    serv_addr.sin_addr.s_addr =
-        inet_addr(argv[1]);
+    serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
 
-    serv_addr.sin_port =
-        htons(
-            atoi(argv[2])
-        );
+    serv_addr.sin_port =htons(atoi(argv[2]));
 
     /* =====================================================
      * 서버 연결
@@ -299,11 +302,8 @@ int main(int argc, char *argv[])
             (struct sockaddr *)&serv_addr,
             sizeof(serv_addr)
         ) == -1
-    )
-    {
-        error_handling(
-            "connect() error"
-        );
+    ) {
+        error_handling("connect() error" );
     }
 
     /* =====================================================
@@ -316,10 +316,7 @@ int main(int argc, char *argv[])
         name
     );
 
-    socket_send(
-        sock,
-        msg
-    );
+    socket_send(sock, msg);
 
     /* =====================================================
      * Thread 시작
@@ -338,10 +335,7 @@ int main(int argc, char *argv[])
         (void *)&sock
     );
 
-    pthread_join(
-        snd_thread,
-        &thread_return
-    );
+    pthread_join(snd_thread, &thread_return);
 
     close(sock);
 
@@ -351,14 +345,8 @@ int main(int argc, char *argv[])
 /* =========================================================
  * Socket Send
  * ========================================================= */
-void socket_send(
-    int sock,
-    const char *data
-)
-{
-    pthread_mutex_lock(
-        &socket_mutex
-    );
+void socket_send(int sock, const char *data) {
+    pthread_mutex_lock(&socket_mutex);
 
     write(
         sock,
@@ -366,9 +354,7 @@ void socket_send(
         strlen(data)
     );
 
-    pthread_mutex_unlock(
-        &socket_mutex
-    );
+    pthread_mutex_unlock(&socket_mutex);
 }
 
 /* =========================================================
@@ -376,8 +362,7 @@ void socket_send(
  * ========================================================= */
 void *send_msg(void *arg)
 {
-    int *sock =
-        (int *)arg;
+    int *sock = (int *)arg;
 
     int ret;
 
@@ -386,122 +371,61 @@ void *send_msg(void *arg)
 
     struct timeval tv;
 
-    char name_msg[
-        NAME_SIZE + BUF_SIZE + 2
-    ];
+    char name_msg[NAME_SIZE + BUF_SIZE + 2];
 
-    FD_ZERO(
-        &initset
-    );
+    FD_ZERO(&initset);
 
-    FD_SET(
-        STDIN_FILENO,
-        &initset
-    );
+    FD_SET(STDIN_FILENO, &initset);
 
-    fputs(
-        "Input a message! [ID]msg (Default ID:ALLMSG)\n",
-        stdout
-    );
+    fputs("Input a message! [ID]msg (Default ID:ALLMSG)\n", stdout);
 
-    while(1)
-    {
-        memset(
-            msg,
-            0,
-            sizeof(msg)
-        );
+    while(1) {
+        memset(msg, 0, sizeof(msg));
 
-        memset(
-            name_msg,
-            0,
-            sizeof(name_msg)
-        );
+        memset(name_msg, 0, sizeof(name_msg));
 
         tv.tv_sec = 1;
         tv.tv_usec = 0;
 
-        newset =
-            initset;
+        newset = initset;
 
-        ret =
-            select(
-                STDIN_FILENO + 1,
-                &newset,
-                NULL,
-                NULL,
-                &tv
-            );
+        ret = select(
+            STDIN_FILENO + 1,
+            &newset,
+            NULL,
+            NULL,
+            &tv
+        );
 
-        if(ret < 0)
-        {
-            if(*sock == -1)
-            {
-                return NULL;
-            }
-
+        if(ret < 0) {
+            if(*sock == -1) { return NULL; }
             continue;
         }
 
-        if(
-            FD_ISSET(
-                STDIN_FILENO,
-                &newset
-            )
-        )
-        {
-            fgets(
-                msg,
-                BUF_SIZE,
-                stdin
-            );
+        if(FD_ISSET(STDIN_FILENO, &newset)) {
+            fgets(msg, BUF_SIZE, stdin);
 
-            if(
-                !strncmp(
-                    msg,
-                    "quit\n",
-                    5
-                )
-            )
-            {
+            if(!strncmp(msg, "quit\n", 5)) {
                 *sock = -1;
-
                 return NULL;
             }
 
-            else if(msg[0] != '[')
-            {
-                strcat(
-                    name_msg,
-                    "[ALLMSG]"
-                );
+            else if(msg[0] != '[') {
+                strcat(name_msg,"[ALLMSG]");
 
-                strcat(
-                    name_msg,
-                    msg
-                );
+                strcat(name_msg, msg);
             }
 
             else
             {
-                strcpy(
-                    name_msg,
-                    msg
-                );
+                strcpy(name_msg, msg);
             }
 
-            socket_send(
-                *sock,
-                name_msg
-            );
+            socket_send(*sock, name_msg);
         }
 
-        if(ret == 0)
-        {
-            if(*sock == -1)
-            {
-                return NULL;
-            }
+        if(ret == 0) {
+            if(*sock == -1) { return NULL; }
         }
     }
 }
@@ -519,23 +443,18 @@ void *send_msg(void *arg)
  * ========================================================= */
 void *recv_msg(void *arg)
 {
-    int *sock =
-        (int *)arg;
+    int *sock = (int *)arg;
 
     MYSQL *con;
 
     /* =====================================================
      * DB 연결
      * ===================================================== */
-    con =
-        mysql_init(NULL);
+    con = mysql_init(NULL);
 
     if(con == NULL)
     {
-        fprintf(
-            stderr,
-            "mysql_init() failed\n"
-        );
+        fprintf(stderr, "mysql_init() failed\n");
 
         return NULL;
     }
@@ -543,61 +462,37 @@ void *recv_msg(void *arg)
     if(
         mysql_real_connect(
             con,
-
             "127.0.0.1",
             "iot",
             "pwiot",
             "sensor_data",
-
             0,
             NULL,
             0
         ) == NULL
-    )
-    {
-        finish_with_error(
-            con
-        );
+    ) {
+        finish_with_error(con);
     }
 
-    printf(
-        "MySQL Connected\n"
-    );
+    printf("MySQL Connected\n");
 
-    char recv_buffer[
-        BUF_SIZE + 1
-    ];
+    char recv_buffer[BUF_SIZE + 1];
 
-    char packet_buffer[
-        BUF_SIZE * 5
-    ];
+    char packet_buffer[BUF_SIZE * 5];
 
     int packet_len = 0;
 
-    while(1)
-    {
+    while(1) {
         int str_len;
 
-        memset(
-            recv_buffer,
-            0,
-            sizeof(recv_buffer)
-        );
+        memset(recv_buffer, 0, sizeof(recv_buffer));
 
-        str_len =
-            read(
-                *sock,
-                recv_buffer,
-                BUF_SIZE
-            );
+        str_len = read(*sock, recv_buffer, BUF_SIZE);
 
-        if(str_len <= 0)
-        {
+        if(str_len <= 0) {
             *sock = -1;
 
-            mysql_close(
-                con
-            );
+            mysql_close(con);
 
             return NULL;
         }
@@ -605,41 +500,23 @@ void *recv_msg(void *arg)
         /* =================================================
          * TCP packet 누적
          * ================================================= */
-        for(
-            int j = 0;
-            j < str_len;
-            j++
-        )
-        {
-            char c =
-                recv_buffer[j];
+        for(int j = 0; j < str_len; j++) {
+            char c = recv_buffer[j];
 
             /*
              * '\n' = packet 종료
              */
-            if(c == '\n')
-            {
-                packet_buffer[
-                    packet_len
-                ] = '\0';
+            if(c == '\n') {
+                packet_buffer[packet_len] = '\0';
 
                 /*
                  * CRLF 대응
                  */
-                if(
-                    packet_len > 0 &&
-                    packet_buffer[
-                        packet_len - 1
-                    ] == '\r'
-                )
-                {
-                    packet_buffer[
-                        packet_len - 1
-                    ] = '\0';
+                if(packet_len > 0 && packet_buffer[packet_len - 1] == '\r') {
+                    packet_buffer[packet_len - 1] = '\0';
                 }
 
-                if(packet_len > 0)
-                {
+                if(packet_len > 0){
                     process_packet(
                         *sock,
                         con,
@@ -652,21 +529,12 @@ void *recv_msg(void *arg)
 
             else
             {
-                if(
-                    packet_len <
-                    (int)sizeof(packet_buffer) - 1
-                )
-                {
-                    packet_buffer[
-                        packet_len++
-                    ] = c;
+                if(packet_len < (int)sizeof(packet_buffer) - 1) {
+                    packet_buffer[packet_len++] = c;
                 }
 
-                else
-                {
-                    printf(
-                        "Packet Buffer Overflow\n"
-                    );
+                else {
+                    printf("Packet Buffer Overflow\n");
 
                     packet_len = 0;
                 }
@@ -695,13 +563,9 @@ void process_packet(
     char *packet
 )
 {
-    char packet_copy[
-        BUF_SIZE * 5
-    ];
+    char packet_copy[BUF_SIZE * 5];
 
-    char *pArray[
-        ARR_CNT
-    ] = {0};
+    char *pArray[ARR_CNT] = {0};
 
     char *pToken;
 
@@ -714,10 +578,7 @@ void process_packet(
         packet
     );
 
-    printf(
-        "\nRX : %s\n",
-        packet_copy
-    );
+    printf("\nRX : %s\n",packet_copy);
 
     /*
      * delimiter:
@@ -726,56 +587,28 @@ void process_packet(
      * ]
      * @
      */
-    pToken =
-        strtok(
-            packet_copy,
-            "[@]"
-        );
+    pToken = strtok( packet_copy, "[@]");
 
-    while(
-        pToken != NULL &&
-        count < ARR_CNT
-    )
-    {
-        pArray[count++] =
-            pToken;
+    while(pToken != NULL &&count < ARR_CNT) {
+        pArray[count++] = pToken;
 
-        pToken =
-            strtok(
-                NULL,
-                "[@]"
-            );
+        pToken =strtok(NULL, "[@]");
     }
 
-    if(count < 2)
-    {
-        printf(
-            "Invalid Packet\n"
-        );
+    if(count < 2){
+        printf("Invalid Packet\n");
 
         return;
     }
 
-    printf(
-        "ID  : %s\n",
-        pArray[0]
-    );
+    printf("ID  : %s\n", pArray[0]);
 
-    printf(
-        "CMD : %s\n",
-        pArray[1]
-    );
+    printf("CMD : %s\n", pArray[1]);
 
     /* =====================================================
      * STM32 SENSOR
      * ===================================================== */
-    if(
-        !strcmp(
-            pArray[1],
-            "SENSOR"
-        )
-    )
-    {
+    if(!strcmp(pArray[1], "SENSOR")) {
         process_sensor(
             sock,
             con,
@@ -787,13 +620,7 @@ void process_packet(
     /* =====================================================
      * Jetson Status
      * ===================================================== */
-    else if(
-        !strcmp(
-            pArray[1],
-            "STATUS"
-        )
-    )
-    {
+    else if(!strcmp( pArray[1], "STATUS")) {
         process_status(
             sock,
             con,
@@ -805,21 +632,10 @@ void process_packet(
     /* =====================================================
      * 기존 GETDB
      * ===================================================== */
-    else if(
-        !strcmp(
-            pArray[1],
-            "GETDB"
-        )
-    )
-    {
-        if(count < 3)
-        {
-            return;
-        }
+    else if(!strcmp(pArray[1], "GETDB")) {
+        if(count < 3) { return; }
 
-        char sql_cmd[
-            200
-        ];
+        char sql_cmd[200];
 
         snprintf(
             sql_cmd,
@@ -832,13 +648,7 @@ void process_packet(
             pArray[2]
         );
 
-        if(
-            mysql_query(
-                con,
-                sql_cmd
-            )
-        )
-        {
+        if(mysql_query(con, sql_cmd)) {
             fprintf(
                 stderr,
                 "GETDB ERROR : %s\n",
@@ -848,10 +658,7 @@ void process_packet(
             return;
         }
 
-        MYSQL_RES *result =
-            mysql_store_result(
-                con
-            );
+        MYSQL_RES *result = mysql_store_result(con);
 
         if(result == NULL)
         {
@@ -864,13 +671,9 @@ void process_packet(
             return;
         }
 
-        MYSQL_ROW row =
-            mysql_fetch_row(
-                result
-            );
+        MYSQL_ROW row = mysql_fetch_row(result);
 
-        if(row != NULL)
-        {
+        if(row != NULL) {
             snprintf(
                 sql_cmd,
                 sizeof(sql_cmd),
@@ -883,35 +686,19 @@ void process_packet(
                 row[0]
             );
 
-            socket_send(
-                sock,
-                sql_cmd
-            );
+            socket_send(sock, sql_cmd);
         }
 
-        mysql_free_result(
-            result
-        );
+        mysql_free_result(result);
     }
 
     /* =====================================================
      * 기존 SETDB
      * ===================================================== */
-    else if(
-        !strcmp(
-            pArray[1],
-            "SETDB"
-        )
-    )
-    {
-        if(count < 4)
-        {
-            return;
-        }
+    else if(!strcmp(pArray[1], "SETDB")) {
+        if(count < 4) { return; }
 
-        char sql_cmd[
-            200
-        ];
+        char sql_cmd[200];
 
         snprintf(
             sql_cmd,
@@ -927,13 +714,7 @@ void process_packet(
             pArray[2]
         );
 
-        if(
-            mysql_query(
-                con,
-                sql_cmd
-            )
-        )
-        {
+        if(mysql_query(con, sql_cmd)) {
             fprintf(
                 stderr,
                 "SETDB ERROR : %s\n",
@@ -954,10 +735,7 @@ void process_packet(
             pArray[3]
         );
 
-        socket_send(
-            sock,
-            sql_cmd
-        );
+        socket_send(sock, sql_cmd);
     }
 }
 
@@ -987,64 +765,39 @@ void process_sensor(
 {
     if(count < 6)
     {
-        printf(
-            "SENSOR Packet Error : count=%d\n",
-            count
-        );
+        printf("SENSOR Packet Error : count=%d\n", count);
 
         return;
     }
 
-    latest_sensor.accel_x =
-        (int16_t)atoi(
-            pArray[2]
-        );
+    latest_sensor.accel_x = (int16_t)atoi(pArray[2]);
 
-    latest_sensor.accel_y =
-        (int16_t)atoi(
-            pArray[3]
-        );
+    latest_sensor.accel_y = (int16_t)atoi(pArray[3]);
 
-    latest_sensor.accel_z =
-        (int16_t)atoi(
-            pArray[4]
-        );
+    latest_sensor.accel_z = (int16_t)atoi(pArray[4]);
 
-    latest_sensor.vibration =
-        atoi(
-            pArray[5]
-        );
+    latest_sensor.vibration = atoi(pArray[5]);
 
-    latest_sensor.timestamp =
-        get_time_sec();
+    latest_sensor.timestamp = get_time_sec();
 
     latest_sensor.sequence++;
 
     latest_sensor.valid = 1;
 
-    printf(
-        "\n===== SENSOR UPDATE =====\n"
-    );
+    printf("\n===== SENSOR UPDATE =====\n");
 
-    printf(
-        "ACCEL : %d %d %d\n",
+    printf("ACCEL : %d %d %d\n",
         latest_sensor.accel_x,
         latest_sensor.accel_y,
         latest_sensor.accel_z
     );
 
-    printf(
-        "VIB   : %d\n",
-        latest_sensor.vibration
-    );
+    printf("VIB   : %d\n", latest_sensor.vibration);
 
     /*
      * Jetson 데이터와 통합 가능한지 확인
      */
-    try_process_integrated_data(
-        sock,
-        con
-    );
+    try_process_integrated_data(sock, con);
 }
 
 /* =========================================================
@@ -1061,11 +814,8 @@ void process_status(
     int count
 )
 {
-    if(count < 3)
-    {
-        printf(
-            "STATUS Packet Error\n"
-        );
+    if(count < 3) {
+        printf("STATUS Packet Error\n");
 
         return;
     }
@@ -1108,49 +858,30 @@ void process_status(
         clean_status
     );
 
-    latest_jetson.timestamp =
-        get_time_sec();
+    latest_jetson.timestamp = get_time_sec();
 
     latest_jetson.valid = 1;
 
-    printf(
-        "\n===== JETSON UPDATE =====\n"
-    );
+    printf("\n===== JETSON UPDATE =====\n");
 
-    printf(
-        "STATUS : %s\n",
-        latest_jetson.status
-    );
+    printf("STATUS : %s\n", latest_jetson.status);
 
     /*
      * SENSOR가 먼저 와있을 수도 있으므로
      * STATUS 수신 시에도 통합 검사
      */
-    try_process_integrated_data(
-        sock,
-        con
-    );
+    try_process_integrated_data(sock, con);
 }
 
 /* =========================================================
  * SENSOR + JETSON 통합
  * ========================================================= */
-void try_process_integrated_data(
-    int sock,
-    MYSQL *con
-)
-{
+void try_process_integrated_data(int sock, MYSQL *con) {
     /*
      * SENSOR와 Jetson STATUS가 모두
      * 한번 이상 들어와야 판단 가능
      */
-    if(
-        !latest_sensor.valid ||
-        !latest_jetson.valid
-    )
-    {
-        return;
-    }
+    if(!latest_sensor.valid || !latest_jetson.valid) { return; }
 
     int is_new_sensor = (latest_sensor.sequence != last_processed_sensor_sequence);
     int is_new_jetson = (strcmp(latest_jetson.status, previous_jetson_status) != 0);
@@ -1158,34 +889,19 @@ void try_process_integrated_data(
     /*
      * 새로운 SENSOR 샘플도 아니고, 새로운 Jetson 상태도 아니면 종료
      */
-    if(!is_new_sensor && !is_new_jetson)
-    {
-        return;
-    }
+    if(!is_new_sensor && !is_new_jetson) { return; }
 
-    double now =
-        get_time_sec();
+    double now = get_time_sec();
 
-    double sensor_age =
-        now -
-        latest_sensor.timestamp;
+    double sensor_age = now - latest_sensor.timestamp;
 
-    double jetson_age =
-        now -
-        latest_jetson.timestamp;
+    double jetson_age = now - latest_jetson.timestamp;
 
     /*
      * 오래된 SENSOR 데이터
      */
-    if(
-        sensor_age >
-        SENSOR_TIMEOUT_SEC
-    )
-    {
-        printf(
-            "Sensor Data Stale : %.2f sec\n",
-            sensor_age
-        );
+    if(sensor_age > SENSOR_TIMEOUT_SEC) {
+        printf("Sensor Data Stale : %.2f sec\n", sensor_age);
 
         return;
     }
@@ -1229,12 +945,7 @@ void try_process_integrated_data(
         jetson_age
     );
 
-    printf(
-        "Result    : %s\n",
-        earthquake_level_string(
-            level
-        )
-    );
+    printf("Result    : %s\n", earthquake_level_string(level));
 
     /*
      * 중요:
@@ -1246,25 +957,15 @@ void try_process_integrated_data(
      */
     int level_changed = (level != previous_level);
 
-    if(level_changed)
-    {
-        control_servos(
-            sock,
-            level
-        );
+    // 상태 변경 기록 (DB 판단용)
+    if (level_changed) { previous_level = level; }
 
-        previous_level =
-            level;
-    }
+    // 실제 서보 제어는 일정 시간 유지 후 실행
+    update_servo_with_delay(sock, level);
 
-    printf(
-        "Servo     : %d deg\n",
-        current_servo_angle
-    );
+    printf("Servo     : %d deg\n", current_servo_angle);
 
-    printf(
-        "========================================\n\n"
-    );
+    printf("========================================\n\n");
 
     /* =====================================================
      * DB 저장 주기 제어 (Rate Limiting)
@@ -1275,16 +976,9 @@ void try_process_integrated_data(
      * ===================================================== */
     int should_save_db = 0;
 
-    if (level != EARTHQUAKE_SAFETY)
-    {
-        should_save_db = 1;
-    }
-    else if (level_changed)
-    {
-        should_save_db = 1;
-    }
-    else if ((now - last_db_save_time) >= DB_SAVE_INTERVAL_SAFETY_SEC)
-    {
+    if (level != EARTHQUAKE_SAFETY) { should_save_db = 1; }
+    else if (level_changed) { should_save_db = 1; }
+    else if ((now - last_db_save_time) >= DB_SAVE_INTERVAL_SAFETY_SEC) {
         should_save_db = 1;
     }
 
@@ -1311,8 +1005,7 @@ void try_process_integrated_data(
     /*
      * 처리 상태 기록
      */
-    last_processed_sensor_sequence =
-        latest_sensor.sequence;
+    last_processed_sensor_sequence = latest_sensor.sequence;
 
     snprintf(
         previous_jetson_status,
@@ -1348,15 +1041,9 @@ void send_bluetooth_data(
         earthquake_level_string(level)
     );
 
-    printf(
-        "BLUETOOTH TX : %s",
-        send_buf
-    );
+    printf("BLUETOOTH TX : %s", send_buf);
 
-    socket_send(
-        sock,
-        send_buf
-    );
+    socket_send(sock, send_buf);
 }
 
 /* =========================================================
@@ -1387,33 +1074,17 @@ void send_bluetooth_data(
  * 3 ~ 5 : CAUTION
  * >= 6  : WARNING
  * ========================================================= */
-EarthquakeLevel detect_earthquake(
-    SensorData *sensor,
-    JetsonData *jetson
-)
-{
+EarthquakeLevel detect_earthquake(SensorData *sensor, JetsonData *jetson) {
     int score = 0;
 
     /* =====================================================
      * Jetson
      * ===================================================== */
-    if(
-        !strcmp(
-            jetson->status,
-            "WARNING"
-        )
-    )
-    {
+    if(!strcmp(jetson->status, "WARNING")) {
         score += 4;
     }
 
-    else if(
-        !strcmp(
-            jetson->status,
-            "CAUTION"
-        )
-    )
-    {
+    else if(!strcmp(jetson->status,"CAUTION")) {
         score += 2;
     }
 
@@ -1425,10 +1096,7 @@ EarthquakeLevel detect_earthquake(
      *
      * 현재는 1 = 감지로 가정
      * ===================================================== */
-    if(
-        sensor->vibration == 1
-    )
-    {
+    if(sensor->vibration == 1) {
         score += 2;
     }
 
@@ -1443,14 +1111,11 @@ EarthquakeLevel detect_earthquake(
      * XYZ magnitude를 계산한 후
      * 1g에서 벗어난 정도를 사용
      * ===================================================== */
-    float ax =
-        (float)sensor->accel_x;
+    float ax = (float)sensor->accel_x;
 
-    float ay =
-        (float)sensor->accel_y;
+    float ay = (float)sensor->accel_y;
 
-    float az =
-        (float)sensor->accel_z;
+    float az = (float)sensor->accel_z;
 
     float accel_magnitude =
         sqrtf(
@@ -1465,38 +1130,22 @@ EarthquakeLevel detect_earthquake(
             MPU6050_1G_RAW
         );
 
-    if(
-        accel_delta >=
-        ACCEL_WARNING_THRESHOLD
-    )
-    {
+    if(accel_delta >= ACCEL_WARNING_THRESHOLD) {
         score += 4;
     }
 
-    else if(
-        accel_delta >=
-        ACCEL_CAUTION_THRESHOLD
-    )
-    {
+    else if(accel_delta >= ACCEL_CAUTION_THRESHOLD) {
         score += 2;
     }
 
     /* =====================================================
      * Debug
      * ===================================================== */
-    printf(
-        "\n===== EARTHQUAKE CHECK =====\n"
-    );
+    printf("\n===== EARTHQUAKE CHECK =====\n");
 
-    printf(
-        "Jetson Status : %s\n",
-        jetson->status
-    );
+    printf("Jetson Status : %s\n", jetson->status);
 
-    printf(
-        "Vibration     : %d\n",
-        sensor->vibration
-    );
+    printf("Vibration     : %d\n", sensor->vibration);
 
     printf(
         "Accel XYZ     : %d %d %d\n",
@@ -1505,50 +1154,30 @@ EarthquakeLevel detect_earthquake(
         sensor->accel_z
     );
 
-    printf(
-        "Accel Mag     : %.3f\n",
-        accel_magnitude
-    );
+    printf("Accel Mag     : %.3f\n", accel_magnitude);
 
-    printf(
-        "Accel Delta   : %.3f\n",
-        accel_delta
-    );
+    printf("Accel Delta   : %.3f\n", accel_delta);
 
-    printf(
-        "Score         : %d\n",
-        score
-    );
+    printf("Score         : %d\n", score);
 
     /* =====================================================
      * 최종 판단
      * ===================================================== */
-    if(score >= 6)
-    {
-        printf(
-            "Decision      : WARNING\n"
-        );
+    if(score >= 6) {
+        printf("Decision      : WARNING\n");
 
-        return
-            EARTHQUAKE_WARNING;
+        return EARTHQUAKE_WARNING;
     }
 
-    else if(score >= 3)
-    {
-        printf(
-            "Decision      : CAUTION\n"
-        );
+    else if(score >= 3) {
+        printf("Decision      : CAUTION\n");
 
-        return
-            EARTHQUAKE_CAUTION;
+        return EARTHQUAKE_CAUTION;
     }
 
-    printf(
-        "Decision      : SAFETY\n"
-    );
+    printf("Decision      : SAFETY\n");
 
-    return
-        EARTHQUAKE_SAFETY;
+    return EARTHQUAKE_SAFETY;
 }
 
 /* =========================================================
@@ -1566,44 +1195,25 @@ EarthquakeLevel detect_earthquake(
  *    -> RELEASE
  *    -> 180 degree
  * ========================================================= */
-void control_servos(
-    int sock,
-    EarthquakeLevel level
-)
-{
-    if(
-        level ==
-        EARTHQUAKE_WARNING
-    )
-    {
-        printf(
-            "\n!!! EARTHQUAKE DETECTED !!!\n"
-        );
+void control_servos(int sock, EarthquakeLevel level) {
+    if(level == EARTHQUAKE_WARNING) {
+        printf("\n!!! EARTHQUAKE DETECTED !!!\n");
 
         /*
          * 먼저 프로그램 내부 상태 변경
          */
-        current_servo_angle =
-            SERVO_RELEASE_ANGLE;
+        current_servo_angle = SERVO_RELEASE_ANGLE;
 
         /*
          * STM32 명령
          */
-        send_servo_command(
-            sock,
-            "RELEASE"
-        );
+        send_servo_command(sock, "RELEASE");
     }
 
-    else
-    {
-        current_servo_angle =
-            SERVO_LOCK_ANGLE;
+    else {
+        current_servo_angle = SERVO_LOCK_ANGLE;
 
-        send_servo_command(
-            sock,
-            "LOCK"
-        );
+        send_servo_command(sock, "LOCK");
     }
 }
 
@@ -1618,14 +1228,8 @@ void control_servos(
  *
  * [PJS_STM]SERVOS@RELEASE
  * ========================================================= */
-void send_servo_command(
-    int sock,
-    const char *command
-)
-{
-    char send_buf[
-        BUF_SIZE
-    ];
+void send_servo_command(int sock, const char *command) {
+    char send_buf[BUF_SIZE];
 
     snprintf(
         send_buf,
@@ -1637,15 +1241,9 @@ void send_servo_command(
         command
     );
 
-    printf(
-        "SERVO TX : %s",
-        send_buf
-    );
+    printf("SERVO TX : %s", send_buf);
 
-    socket_send(
-        sock,
-        send_buf
-    );
+    socket_send(sock, send_buf);
 }
 
 /* =========================================================
@@ -1705,9 +1303,7 @@ void save_database(
     EarthquakeLevel level
 )
 {
-    char sql_cmd[
-        700
-    ];
+    char sql_cmd[700];
 
     snprintf(
         sql_cmd,
@@ -1771,30 +1367,15 @@ void save_database(
         jetson->status
     );
 
-    printf(
-        "\nSQL : %s\n",
-        sql_cmd
-    );
+    printf("\nSQL : %s\n", sql_cmd);
 
-    int res =
-        mysql_query(
-            con,
-            sql_cmd
-        );
+    int res = mysql_query(con, sql_cmd);
 
-    if(!res)
-    {
+    if(!res) {
         printf(
             "DB INSERT SUCCESS : %lu row [%s]\n",
-
-            (unsigned long)
-            mysql_affected_rows(
-                con
-            ),
-
-            earthquake_level_string(
-                level
-            )
+            (unsigned long)mysql_affected_rows(con),
+            earthquake_level_string(level)
         );
 
         send_bluetooth_data(
@@ -1809,14 +1390,59 @@ void save_database(
     {
         fprintf(
             stderr,
-
             "DB INSERT ERROR : %s\n",
-
-            mysql_error(
-                con
-            )
+            mysql_error(con)
         );
     }
+}
+
+void update_servo_with_delay(int sock, EarthquakeLevel level) {
+    double now = get_time_sec();
+
+    // CAUTION이면 진행 중인 타이머 취소
+    if (level == EARTHQUAKE_CAUTION) {
+        pending_level = -1;
+        return;
+    }
+
+    // 새로운 상태가 감지되면 시작 시간 기록
+    if (level != pending_level) {
+        pending_level = level;
+        pending_level_start_time = now;
+
+        printf("SERVO TIMER START : %s\n", earthquake_level_string(level));
+    }
+
+    // 해당 상태가 유지된 시간
+    double elapsed = now - pending_level_start_time;
+
+    // 필요한 유지 시간
+    double required_time =
+        (level == EARTHQUAKE_WARNING)
+        ? WARNING_HOLD_SEC
+        : SAFETY_HOLD_SEC;
+
+    // 아직 유지 시간이 부족하면 명령 전송 안 함
+    if (elapsed < required_time) {
+        printf(
+            "SERVO WAIT : %s %.1f / %.1f sec\n",
+            earthquake_level_string(level),
+            elapsed,
+            required_time
+        );
+
+        return;
+    }
+
+    // 이미 적용된 상태라면 중복 전송 방지
+    if (level == applied_servo_level) { return; }
+
+    // 지정한 시간이 지나면 실제 서보 제어
+    control_servos(sock, level);
+
+    applied_servo_level = level;
+
+    printf("SERVO COMMAND APPLIED : %s\n", earthquake_level_string(level));
 }
 
 /* =========================================================
@@ -1826,63 +1452,36 @@ double get_time_sec(void)
 {
     struct timespec ts;
 
-    clock_gettime(
-        CLOCK_MONOTONIC,
-        &ts
-    );
+    clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    return
-        (double)ts.tv_sec
-        +
-        (double)ts.tv_nsec /
-        1000000000.0;
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
 
 /* =========================================================
  * 상태 문자열
  * ========================================================= */
-const char *earthquake_level_string(
-    EarthquakeLevel level
-)
-{
+const char *earthquake_level_string(EarthquakeLevel level) {
     switch(level)
     {
         case EARTHQUAKE_SAFETY:
-
-            return
-                "SAFETY";
+            return "SAFETY";
 
         case EARTHQUAKE_CAUTION:
-
-            return
-                "CAUTION";
+            return "CAUTION";
 
         case EARTHQUAKE_WARNING:
-
-            return
-                "WARNING";
+            return "WARNING";
     }
 
-    return
-        "UNKNOWN";
+    return "UNKNOWN";
 }
 
 /* =========================================================
  * Error
  * ========================================================= */
-void error_handling(
-    char *msg
-)
-{
-    fputs(
-        msg,
-        stderr
-    );
-
-    fputc(
-        '\n',
-        stderr
-    );
+void error_handling(char *msg) {
+    fputs(msg, stderr);
+    fputc('\n', stderr);
 
     exit(1);
 }
@@ -1890,21 +1489,14 @@ void error_handling(
 /* =========================================================
  * MySQL Error
  * ========================================================= */
-void finish_with_error(
-    MYSQL *con
-)
-{
+void finish_with_error(MYSQL *con) {
     fprintf(
         stderr,
         "%s\n",
-        mysql_error(
-            con
-        )
+        mysql_error(con)
     );
 
-    mysql_close(
-        con
-    );
+    mysql_close(con);
 
     exit(1);
 }
