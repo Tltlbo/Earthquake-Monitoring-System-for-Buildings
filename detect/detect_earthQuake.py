@@ -1,17 +1,42 @@
+
 import numpy as np
 import socket
 import threading
 import time
 
-np.object = object
-np.bool = bool
-np.complex = complex
-np.int = int
-np.float = float
-np.str = str
-np.typeDict = np.sctypeDict
+# ============================================================
+# NumPy 호환성 설정
+# ============================================================
+
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", FutureWarning)
+
+    if "object" not in np.__dict__:
+        np.object = object
+
+    if "bool" not in np.__dict__:
+        np.bool = bool
+
+    if "complex" not in np.__dict__:
+        np.complex = complex
+
+    if "int" not in np.__dict__:
+        np.int = int
+
+    if "float" not in np.__dict__:
+        np.float = float
+
+    if "str" not in np.__dict__:
+        np.str = str
+
+    if "typeDict" not in np.__dict__:
+        np.typeDict = np.sctypeDict
+
 
 from tensorflow.keras.models import load_model
+from PIL import Image, ImageOps
 import cv2
 
 
@@ -19,9 +44,10 @@ import cv2
 # TCP 서버 설정
 # ============================================================
 
-SERVER_IP = "10.10.16.74"   # 실제 서버 IP에 맞게 수정
+SERVER_IP = "10.10.16.74"
 SERVER_PORT = 5000
 
+LOGIN_ID = "PJS_JET"
 CLIENT_ID = "PJS_SQL"
 PASSWORD = "PASSWD"
 
@@ -30,12 +56,31 @@ PASSWORD = "PASSWD"
 # AI 판정 안정화 설정
 # ============================================================
 
-# 같은 결과가 몇 프레임 연속 나와야 확정할지
+# 동일 상태가 연속으로 나와야 하는 프레임 수
 STABLE_FRAME_COUNT = 5
 
-# 너무 낮은 신뢰도의 결과는 무시하고 싶으면 사용
-# 예: 0.70 = 70%
+# 최소 신뢰도 (0.0 = 제한 없음)
 MIN_CONFIDENCE = 0.0
+
+# 서버에 상태 재전송하는 주기
+HEARTBEAT_INTERVAL = 1.0
+
+# 추론 사이 추가 지연
+FRAME_DELAY = 0.03
+
+# 전체 클래스별 확률 출력 여부
+PRINT_ALL_PREDICTIONS = True
+
+
+# ============================================================
+# 모델 설정
+# ============================================================
+
+MODEL_PATH = "keras_model.h5"
+LABEL_PATH = "labels.txt"
+
+MODEL_WIDTH = 224
+MODEL_HEIGHT = 224
 
 
 # ============================================================
@@ -48,6 +93,7 @@ client_socket = socket.socket(
 )
 
 try:
+
     client_socket.connect(
         (SERVER_IP, SERVER_PORT)
     )
@@ -57,25 +103,23 @@ try:
         f"{SERVER_IP}:{SERVER_PORT}"
     )
 
-    # 기존 C 클라이언트와 동일한 로그인 방식
-    login_msg = f"[PJS_JET:{PASSWORD}]"
+    login_msg = f"[{LOGIN_ID}:{PASSWORD}]"
 
     client_socket.sendall(
-        login_msg.encode()
+        login_msg.encode("utf-8")
     )
 
     print(
-        f"[TCP] Login Sent : "
-        f"{login_msg}"
+        f"[TCP] Login Sent : {login_msg}"
     )
 
 except Exception as e:
-    print(
-        "[TCP] Connection Error:",
-        e
-    )
 
-    exit()
+    print("[TCP] Connection Error:", e)
+
+    client_socket.close()
+
+    raise SystemExit(1)
 
 
 # ============================================================
@@ -91,25 +135,21 @@ def recv_server():
             data = client_socket.recv(1024)
 
             if not data:
-                print(
-                    "[TCP] Server disconnected"
-                )
+
+                print("[TCP] Server disconnected")
                 break
 
             print(
                 "[SERVER]",
                 data.decode(
+                    "utf-8",
                     errors="ignore"
                 )
             )
 
         except Exception as e:
 
-            print(
-                "[TCP] Receive Error:",
-                e
-            )
-
+            print("[TCP] Receive Error:", e)
             break
 
 
@@ -125,19 +165,111 @@ recv_thread.start()
 # AI 모델 로드
 # ============================================================
 
-np.set_printoptions(
-    suppress=True
-)
+np.set_printoptions(suppress=True)
 
 model = load_model(
-    "keras_model.h5",
+    MODEL_PATH,
     compile=False
 )
 
-class_names = open(
-    "labels.txt",
-    "r"
-).readlines()
+with open(
+    LABEL_PATH,
+    "r",
+    encoding="utf-8"
+) as file:
+
+    class_names = []
+
+    for line in file:
+
+        label = line.strip()
+
+        if not label:
+            continue
+
+        parts = label.split(" ", 1)
+
+        if len(parts) == 2:
+            label = parts[1]
+
+        class_names.append(label.upper())
+
+
+print("================================")
+print("[AI] Model Loaded")
+print("[AI] Input Shape:", model.input_shape)
+print("[AI] Output Shape:", model.output_shape)
+print("[AI] Classes:", class_names)
+print("================================")
+
+if model.input_shape[1:3] != (
+    MODEL_HEIGHT,
+    MODEL_WIDTH
+):
+    raise ValueError(
+        "Model input size is not 224x224"
+    )
+
+if model.output_shape[-1] != len(class_names):
+    raise ValueError(
+        "Model output count and label count differ"
+    )
+
+
+# ============================================================
+# Pillow 버전 호환
+# ============================================================
+
+try:
+    RESAMPLE_METHOD = Image.Resampling.LANCZOS
+
+except AttributeError:
+    RESAMPLE_METHOD = Image.LANCZOS
+
+
+# ============================================================
+# Teachable Machine 이미지 전처리
+# ============================================================
+
+def preprocess_image(frame):
+
+    # OpenCV BGR -> RGB
+    rgb_image = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
+
+    # NumPy -> PIL
+    pil_image = Image.fromarray(
+        rgb_image
+    )
+
+    # 중앙 크롭 + 224x224
+    pil_image = ImageOps.fit(
+        pil_image,
+        (MODEL_WIDTH, MODEL_HEIGHT),
+        method=RESAMPLE_METHOD,
+        centering=(0.5, 0.5)
+    )
+
+    # PIL -> NumPy
+    image_array = np.asarray(
+        pil_image,
+        dtype=np.float32
+    )
+
+    # -1 ~ 1 정규화
+    normalized_image = (
+        image_array / 127.5
+    ) - 1.0
+
+    # (224,224,3) -> (1,224,224,3)
+    model_input = np.expand_dims(
+        normalized_image,
+        axis=0
+    )
+
+    return model_input
 
 
 # ============================================================
@@ -148,29 +280,27 @@ camera = cv2.VideoCapture(0)
 
 if not camera.isOpened():
 
-    print(
-        "[CAMERA] Camera open failed"
-    )
+    print("[CAMERA] Camera open failed")
 
     client_socket.close()
 
-    exit()
+    raise SystemExit(1)
+
+
+print("[CAMERA] Camera Opened")
+print("[CAMERA] Display Disabled")
 
 
 # ============================================================
 # AI 상태 변수
 # ============================================================
 
-# 바로 이전 프레임의 AI 판정
 last_prediction = None
 
-# 같은 판정이 연속으로 나온 횟수
 same_count = 0
 
-# 서버에 마지막으로 전송한 확정 상태
 confirmed_class = None
 
-# 마지막 전송 시간 (주기적 동기화용)
 last_send_time = 0.0
 
 
@@ -186,13 +316,11 @@ try:
         # 카메라 이미지 획득
         # ----------------------------------------------------
 
-        ret, image = camera.read()
+        ret, frame = camera.read()
 
         if not ret:
 
-            print(
-                "[CAMERA] Failed to read frame"
-            )
+            print("[CAMERA] Failed to read frame")
 
             time.sleep(0.1)
 
@@ -200,48 +328,12 @@ try:
 
 
         # ----------------------------------------------------
-        # 모델 입력 크기로 변경
+        # Teachable Machine 전처리
         # ----------------------------------------------------
 
-        image = cv2.resize(
-            image,
-            (224, 224),
-            interpolation=cv2.INTER_AREA
+        model_input = preprocess_image(
+            frame
         )
-
-
-        # ----------------------------------------------------
-        # 웹캠 화면 표시 안 함
-        # ----------------------------------------------------
-
-        # cv2.imshow(
-        #     "Webcam Image",
-        #     image
-        # )
-
-
-        # ----------------------------------------------------
-        # numpy array 변환
-        # ----------------------------------------------------
-
-        image = np.asarray(
-            image,
-            dtype=np.float32
-        ).reshape(
-            1,
-            224,
-            224,
-            3
-        )
-
-
-        # ----------------------------------------------------
-        # Normalize
-        # ----------------------------------------------------
-
-        image = (
-            image / 127.5
-        ) - 1
 
 
         # ----------------------------------------------------
@@ -249,77 +341,61 @@ try:
         # ----------------------------------------------------
 
         prediction = model.predict(
-            image,
+            model_input,
             verbose=0
         )
 
-        index = np.argmax(
-            prediction
+        scores = prediction[0]
+
+        index = int(
+            np.argmax(scores)
         )
 
-        confidence_score = (
-            prediction[0][index]
+        confidence_score = float(
+            scores[index]
         )
+
+        current_class = class_names[index]
 
 
         # ----------------------------------------------------
-        # labels.txt
-        #
-        # 0 Warning
-        # 1 Caution
-        # 2 Safety
+        # 클래스별 확률 출력
         # ----------------------------------------------------
 
-        class_name = (
-            class_names[index]
-            .strip()
-        )
+        if PRINT_ALL_PREDICTIONS:
 
-        # "0 Warning"
-        #      ↓
-        # "Warning"
+            print("------------------------------")
 
-        parts = class_name.split(
-            " ",
-            1
-        )
+            for i, score in enumerate(scores):
 
-        if len(parts) == 2:
-
-            class_name = parts[1]
-
-        current_class = (
-            class_name.upper()
-        )
+                print(
+                    f"[AI] {class_names[i]}: "
+                    f"{score * 100:.2f}%"
+                )
 
 
         # ----------------------------------------------------
-        # 현재 AI 결과 출력
-        # ----------------------------------------------------
-
-        print(
-            f"[AI] "
-            f"{current_class} "
-            f"{confidence_score * 100:.1f}% "
-            f"| stable={same_count}"
-        )
-
-
-        # ----------------------------------------------------
-        # 신뢰도가 너무 낮으면 이번 결과 무시
+        # 최소 신뢰도 검사
         # ----------------------------------------------------
 
         if confidence_score < MIN_CONFIDENCE:
 
+            print(
+                f"[AI] Low Confidence: "
+                f"{confidence_score * 100:.1f}%"
+            )
+
             last_prediction = None
             same_count = 0
+
+            time.sleep(FRAME_DELAY)
 
             continue
 
 
-        # ====================================================
-        # 같은 판정이 연속으로 나오는지 검사
-        # ====================================================
+        # ----------------------------------------------------
+        # 동일 상태 연속 판정
+        # ----------------------------------------------------
 
         if current_class == last_prediction:
 
@@ -327,29 +403,45 @@ try:
 
         else:
 
-            # 다른 판정이 나오면
-            # 새 상태로 카운트 시작
-
             last_prediction = current_class
-
             same_count = 1
 
 
+        # ----------------------------------------------------
+        # AI 상태 출력
+        # ----------------------------------------------------
+
+        print(
+            f"[AI] {current_class} "
+            f"{confidence_score * 100:.1f}% "
+            f"| stable={same_count}"
+        )
+
+
         # ====================================================
-        # 일정 프레임 이상 같은 결과가 나온 경우
+        # 안정화된 상태만 TCP 전송
         # ====================================================
 
-        current_time = time.time()
+        current_time = time.monotonic()
 
         if same_count >= STABLE_FRAME_COUNT:
 
-            # 상태가 변경되었거나, 마지막 전송 후 1초가 경과했으면 전송 (주기적 동기화/하트비트)
-            if (current_class != confirmed_class) or (current_time - last_send_time >= 1.0):
+            # 상태 변경 여부
+            state_changed = (
+                current_class != confirmed_class
+            )
 
-                # TCP 메시지 끝에 \n 추가
-                #
-                # 예:
-                # [PJS_SQL]STATUS@WARNING\n
+            # Heartbeat 주기 도달 여부
+            heartbeat_due = (
+                current_time - last_send_time
+                >= HEARTBEAT_INTERVAL
+            )
+
+            if state_changed or heartbeat_due:
+
+                # --------------------------------------------
+                # TCP 패킷 생성
+                # --------------------------------------------
 
                 send_msg = (
                     f"[{CLIENT_ID}]"
@@ -359,51 +451,71 @@ try:
                 try:
 
                     client_socket.sendall(
-                        send_msg.encode()
+                        send_msg.encode("utf-8")
                     )
 
-                    if current_class != confirmed_class:
+                    # ----------------------------------------
+                    # 상태 변경 로그
+                    # ----------------------------------------
+
+                    if state_changed:
+
                         print(
                             "================================"
                         )
+
                         print(
-                            f"[TCP SEND (STATE CHANGE)] "
-                            f"{send_msg.strip()}"
+                            "[TCP SEND (STATE CHANGE)]",
+                            send_msg.strip()
                         )
+
                         print(
                             f"[CONFIDENCE] "
                             f"{confidence_score * 100:.1f}%"
                         )
+
                         print(
                             f"[STABLE FRAME] "
                             f"{same_count}"
                         )
+
                         print(
                             "================================"
                         )
+
+                    # ----------------------------------------
+                    # Heartbeat 로그
+                    # ----------------------------------------
+
                     else:
+
                         print(
-                            f"[TCP HEARTBEAT] {send_msg.strip()}"
+                            "[TCP HEARTBEAT]",
+                            send_msg.strip()
                         )
 
-                    # 서버에 전송한 상태 저장
-                    confirmed_class = (
-                        current_class
-                    )
+
+                    # ----------------------------------------
+                    # 전송 상태 저장
+                    # ----------------------------------------
+
+                    confirmed_class = current_class
+
                     last_send_time = current_time
+
 
                 except Exception as e:
 
-                    print(
-                        "[TCP] Send Error:",
-                        e
-                    )
+                    print("[TCP] Send Error:", e)
 
                     break
 
 
-        # CPU 과부하 방지
-        time.sleep(0.03)
+        # ----------------------------------------------------
+        # CPU 부하 완화
+        # ----------------------------------------------------
+
+        time.sleep(FRAME_DELAY)
 
 
 # ============================================================
@@ -412,9 +524,7 @@ try:
 
 except KeyboardInterrupt:
 
-    print(
-        "\n[PROGRAM] User terminated"
-    )
+    print("\n[PROGRAM] User terminated")
 
 
 # ============================================================
@@ -425,15 +535,18 @@ finally:
 
     camera.release()
 
-    cv2.destroyAllWindows()
+    # GUI를 사용하지 않으므로
+    # cv2.destroyAllWindows() 호출하지 않음
 
     try:
 
-        client_socket.close()
+        client_socket.shutdown(
+            socket.SHUT_RDWR
+        )
 
-    except:
+    except OSError:
         pass
 
-    print(
-        "[TCP] Connection closed"
-    )
+    client_socket.close()
+
+    print("[TCP] Connection closed")
