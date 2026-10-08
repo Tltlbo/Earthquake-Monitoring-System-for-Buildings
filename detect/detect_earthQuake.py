@@ -2,6 +2,7 @@ import numpy as np
 import socket
 import threading
 import time
+from PIL import Image, ImageOps
 
 np.object = object
 np.bool = bool

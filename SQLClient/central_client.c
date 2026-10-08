@@ -28,7 +28,7 @@
 #define DB_SAVE_INTERVAL_SAFETY_SEC 3.0
 #define WARNING_HOLD_SEC 3.0
 #define SAFETY_HOLD_SEC 5.0
-
+#define SAFETY_CANCEL_SEC 2.0
 /* =========================================================
  * MPU6050
  *
@@ -234,6 +234,12 @@ double pending_level_start_time = 0.0;
 
 // 마지막으로 서보에 적용한 상태
 EarthquakeLevel applied_servo_level = EARTHQUAKE_SAFETY;
+
+// SAFETY 연속 감지 시작 시간
+double safety_start_time = 0.0;
+
+// SAFETY 연속 감지 여부
+int safety_counting = 0;
 
 /*
  * send thread / recv thread가
@@ -1396,53 +1402,152 @@ void save_database(
     }
 }
 
-void update_servo_with_delay(int sock, EarthquakeLevel level) {
+void update_servo_with_delay(int sock, EarthquakeLevel level)
+{
     double now = get_time_sec();
 
-    // CAUTION이면 진행 중인 타이머 취소
-    if (level == EARTHQUAKE_CAUTION) {
-        pending_level = -1;
-        return;
+    // =========================================
+    // 1. WARNING 감지
+    // =========================================
+    if (level == EARTHQUAKE_WARNING)
+    {
+        // SAFETY 연속 감지 취소
+        safety_counting = 0;
+
+        // 아직 RELEASE 대기가 시작되지 않았다면
+        if (pending_level != EARTHQUAKE_WARNING)
+        {
+            pending_level = EARTHQUAKE_WARNING;
+            pending_level_start_time = now;
+
+            printf("WARNING DETECTED - RELEASE TIMER START\n");
+        }
     }
 
-    // 새로운 상태가 감지되면 시작 시간 기록
-    if (level != pending_level) {
-        pending_level = level;
-        pending_level_start_time = now;
+    // =========================================
+    // 2. CAUTION 감지
+    // =========================================
+    else if (level == EARTHQUAKE_CAUTION)
+    {
+        // SAFETY 연속 감지 취소
+        safety_counting = 0;
 
-        printf("SERVO TIMER START : %s\n", earthquake_level_string(level));
+        // WARNING 이후 CAUTION이면 타이머 유지
+        if (pending_level == EARTHQUAKE_WARNING)
+        {
+            printf("CAUTION - RELEASE TIMER KEEP\n");
+        }
+        else
+        {
+            return;
+        }
     }
 
-    // 해당 상태가 유지된 시간
+    // =========================================
+    // 3. SAFETY 감지
+    // =========================================
+    else if (level == EARTHQUAKE_SAFETY)
+    {
+        // SAFETY 최초 감지
+        if (!safety_counting)
+        {
+            safety_counting = 1;
+            safety_start_time = now;
+
+            printf("SAFETY TIMER START\n");
+        }
+
+        double safety_elapsed = now - safety_start_time;
+
+        // RELEASE 대기 중인 경우
+        if (pending_level == EARTHQUAKE_WARNING &&
+            applied_servo_level != EARTHQUAKE_WARNING)
+        {
+            printf(
+                "SAFETY CANCEL WAIT : %.1f / %.1f sec\n",
+                safety_elapsed,
+                (double)SAFETY_CANCEL_SEC
+            );
+
+            // SAFETY가 충분히 유지되면 RELEASE 취소
+            if (safety_elapsed >= SAFETY_CANCEL_SEC)
+            {
+                pending_level = EARTHQUAKE_SAFETY;
+                pending_level_start_time = safety_start_time;
+
+                printf("RELEASE TIMER CANCELLED\n");
+            }
+            else
+            {
+                // 잠깐 SAFETY이면 RELEASE 대기 유지
+                return;
+            }
+        }
+        else if (pending_level != EARTHQUAKE_SAFETY)
+        {
+            pending_level = EARTHQUAKE_SAFETY;
+            pending_level_start_time = safety_start_time;
+        }
+    }
+
+    // =========================================
+    // 4. 경과 시간 계산
+    // =========================================
     double elapsed = now - pending_level_start_time;
 
-    // 필요한 유지 시간
-    double required_time =
-        (level == EARTHQUAKE_WARNING)
-        ? WARNING_HOLD_SEC
-        : SAFETY_HOLD_SEC;
+    // =========================================
+    // 5. RELEASE 처리
+    // =========================================
+    if (pending_level == EARTHQUAKE_WARNING)
+    {
+        // 이미 RELEASE 상태이면 중복 전송 방지
+        if (applied_servo_level == EARTHQUAKE_WARNING)
+        {
+            return;
+        }
 
-    // 아직 유지 시간이 부족하면 명령 전송 안 함
-    if (elapsed < required_time) {
         printf(
-            "SERVO WAIT : %s %.1f / %.1f sec\n",
-            earthquake_level_string(level),
+            "RELEASE WAIT : %.1f / %.1f sec\n",
             elapsed,
-            required_time
+            (double)WARNING_HOLD_SEC
         );
 
-        return;
+        if (elapsed >= WARNING_HOLD_SEC)
+        {
+            control_servos(sock, EARTHQUAKE_WARNING);
+
+            applied_servo_level = EARTHQUAKE_WARNING;
+
+            printf("SERVO RELEASE APPLIED\n");
+        }
     }
 
-    // 이미 적용된 상태라면 중복 전송 방지
-    if (level == applied_servo_level) { return; }
+    // =========================================
+    // 6. LOCK 처리
+    // =========================================
+    else if (pending_level == EARTHQUAKE_SAFETY)
+    {
+        // 이미 LOCK 상태이면 중복 전송 방지
+        if (applied_servo_level == EARTHQUAKE_SAFETY)
+        {
+            return;
+        }
 
-    // 지정한 시간이 지나면 실제 서보 제어
-    control_servos(sock, level);
+        printf(
+            "LOCK WAIT : %.1f / %.1f sec\n",
+            elapsed,
+            (double)SAFETY_HOLD_SEC
+        );
 
-    applied_servo_level = level;
+        if (elapsed >= SAFETY_HOLD_SEC)
+        {
+            control_servos(sock, EARTHQUAKE_SAFETY);
 
-    printf("SERVO COMMAND APPLIED : %s\n", earthquake_level_string(level));
+            applied_servo_level = EARTHQUAKE_SAFETY;
+
+            printf("SERVO LOCK APPLIED\n");
+        }
+    }
 }
 
 /* =========================================================
