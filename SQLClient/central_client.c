@@ -44,7 +44,7 @@
  *
  * 실제 측정 후 반드시 튜닝 필요
  * ========================================================= */
-#define ACCEL_CAUTION_THRESHOLD 750.0f
+#define ACCEL_CAUTION_THRESHOLD 1000.0f
 #define ACCEL_WARNING_THRESHOLD 1500.0f
 
 /* =========================================================
