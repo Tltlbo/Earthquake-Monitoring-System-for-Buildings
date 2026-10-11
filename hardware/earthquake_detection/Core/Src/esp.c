@@ -21,6 +21,8 @@ extern volatile char rx2Data[50];
 extern uint8_t cdata;
 static uint8_t data;
 cb_data_t cb_data;
+/* Optional hook overridden by main.c; startup behavior remains unchanged. */
+__weak void esp_background_service(void) {}
 extern UART_HandleTypeDef huart6;
 static int esp_at_command(uint8_t *cmd, uint8_t *resp, uint16_t *length, int16_t time_out)
 {
@@ -36,7 +38,8 @@ static int esp_at_command(uint8_t *cmd, uint8_t *resp, uint16_t *length, int16_t
         return -1;
     }
 
-    while(time_out > 0)
+    uint32_t wait_start = HAL_GetTick();
+    while((uint32_t)(HAL_GetTick() - wait_start) < (uint32_t)time_out)
     {
         if(cb_data.length >= MAX_UART_RX_BUFFER)
         {
@@ -60,8 +63,8 @@ static int esp_at_command(uint8_t *cmd, uint8_t *resp, uint16_t *length, int16_t
             *length = cb_data.length;
             return 0;
         }
-        time_out -= 10;
-        HAL_Delay(10);
+        esp_background_service();
+        HAL_Delay(1);
     }
     printf("[ESP Timeout] Cmd: %s -> Rx %d bytes: [%s]\r\n", (char *)cmd, cb_data.length, (char *)cb_data.buf);
     return -4;
