@@ -7,7 +7,6 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <pthread.h>
-#include <signal.h>
 #include <mysql/mysql.h>
 #include <time.h>
 #include <math.h>
@@ -69,7 +68,8 @@ typedef enum
  *
  * STM32 Packet
  *
- * [STM32]SENSOR@AX@AY@AZ@VIBRATION
+ * [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK@P2P@RMS@ABNORMAL@VALID
+ * 구형 호환 형식: [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK
  * ========================================================= */
 typedef struct
 {
@@ -199,7 +199,7 @@ JetsonData latest_jetson = {
 };
 
 /*
- * 현재 서보 상태
+ * 마지막으로 송신 시도한 서보 명령 각도 (위치 피드백 아님)
  *
  * LOCK    = 0
  * RELEASE = 180
@@ -226,18 +226,18 @@ double last_db_save_time = 0.0;
 /*
  * 이전 지진 상태
  *
- * 지진 상태가 바뀌었을 때만
- * STM32로 서보 제어 명령 전송
+ * 통합 단계 변경을 감지해 DB 저장 여부 결정
+ * 서보 명령은 update_servo_with_delay()에서 별도로 결정
  */
 EarthquakeLevel previous_level = -1;
 
-// 현재 연속으로 관측 중인 지진 상태
+// 서보 적용 대기 상태; WARNING 이후 CAUTION에서도 유지할 수 있음
 EarthquakeLevel pending_level = -1;
 
 // 해당 상태가 시작된 시간
 double pending_level_start_time = 0.0;
 
-// 마지막으로 서보에 적용한 상태
+// 마지막으로 서보 명령을 송신 시도한 상태 (구동 확인 아님)
 EarthquakeLevel applied_servo_level = EARTHQUAKE_SAFETY;
 
 // SAFETY 연속 감지 시작 시간
@@ -449,7 +449,7 @@ void *send_msg(void *arg)
  *
  * 예:
  *
- * [STM32]SENSOR@100@200@16000@1\n
+ * 구형 호환 예: [CSH_ARD]SENSOR@100@200@16000@1\n
  * [PJS_JET]STATUS@WARNING\n
  * ========================================================= */
 void *recv_msg(void *arg)
@@ -559,7 +559,8 @@ void *recv_msg(void *arg)
  *
  * STM32:
  *
- * [STM32]SENSOR@AX@AY@AZ@VIBRATION
+ * [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK@P2P@RMS@ABNORMAL@VALID
+ * 구형 호환 형식: [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK
  *
  * Jetson:
  *
@@ -755,16 +756,19 @@ void process_packet(
  *
  * Packet:
  *
- * [STM32]SENSOR@AX@AY@AZ@VIBRATION
+ * [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK@P2P@RMS@ABNORMAL@VALID
+ * 구형 호환 형식: [CSH_ARD]SENSOR@AX@AY@AZ@SHOCK
  *
  * pArray
  *
- * 0 = STM32
+ * 0 = 송신자 ID (현재 CSH_ARD)
  * 1 = SENSOR
  * 2 = accel_x
  * 3 = accel_y
  * 4 = accel_z
- * 5 = vibration
+ * 5 = shock (기존 변수명 vibration)
+ * 6 = window_p2p, 7 = window_rms
+ * 8 = window_abnormal, 9 = window_valid
  *
  * ========================================================= */
 void process_sensor(
@@ -909,8 +913,8 @@ void process_status(
  * ========================================================= */
 void try_process_integrated_data(int sock, MYSQL *con) {
     /*
-     * SENSOR와 Jetson STATUS가 모두
-     * 한번 이상 들어와야 판단 가능
+     * 센서 유효 상태와 영상 상태를 확인한다.
+     * 영상 초기값은 SAFETY/valid=1이므로 실제 영상 미수신 시에도 판정한다.
      */
     if(!latest_sensor.valid || !latest_jetson.valid) { return; }
 
@@ -938,8 +942,8 @@ void try_process_integrated_data(int sock, MYSQL *con) {
     }
 
     /*
-     * Jetson 데이터는 상태 변경 시에만 전송되므로(이벤트 기반),
-     * 타임아웃으로 만료시키지 않고 마지막 수신된 상태를 계속 유지합니다.
+     * Jetson은 안정 조건 아래 상태 변경 및 1초 heartbeat를 전송한다.
+     * 현재 관제는 영상 상태를 만료시키지 않고 마지막 상태를 유지한다.
      */
 
     /* =====================================================
@@ -981,17 +985,15 @@ void try_process_integrated_data(int sock, MYSQL *con) {
     /*
      * 중요:
      *
-     * 상태가 바뀌었을 때 먼저 서보 상태를 결정한다.
-     *
-     * 그래야 아래 DB 저장에서
-     * 현재 판단 결과에 해당하는 0 / 180이 저장된다.
+     * 서보 대기 조건을 먼저 확인한 뒤 DB에 마지막 명령 각도를 저장한다.
+     * 대기 중에는 현재 통합 단계와 저장되는 명령 각도가 다를 수 있다.
      */
     int level_changed = (level != previous_level);
 
     // 상태 변경 기록 (DB 판단용)
     if (level_changed) { previous_level = level; }
 
-    // 실제 서보 제어는 일정 시간 유지 후 실행
+    // 서보 제어는 대기 정책에 따라 실행하며 WARNING 연속 유지와는 다르다.
     update_servo_with_delay(sock, level);
 
     printf("Servo     : %d deg\n", current_servo_angle);
@@ -1001,7 +1003,7 @@ void try_process_integrated_data(int sock, MYSQL *con) {
     /* =====================================================
      * DB 저장 주기 제어 (Rate Limiting)
      *
-     * 1. 지진 발생(CAUTION / WARNING) 시에는 매 패킷 즉시 저장
+     * 1. CAUTION / WARNING이면 통합 판정이 실행될 때마다 저장
      * 2. 지진 상태가 바뀌었을 때(SAFETY <-> WARNING 등) 즉시 저장
      * 3. 평상시(SAFETY)에는 DB_SAVE_INTERVAL_SAFETY_SEC 주기마다 1회 저장
      * ===================================================== */
@@ -1096,8 +1098,8 @@ void send_bluetooth_data(
  * 감지     : +2
  *
  * Acceleration
- * WARNING : +4
- * CAUTION : +2
+ * 유효한 구간 결과: ABNORMAL=1이면 +4, 정상 구간이면 +0
+ * 구간 무효/구형 메시지 fallback: 순간값 WARNING +4 / CAUTION +2
  *
  * 총점
  *
@@ -1138,9 +1140,9 @@ EarthquakeLevel detect_earthquake(SensorData *sensor, JetsonData *jetson) {
      *
      * 1g ≈ 16384 raw
      *
-     * 기울기에 영향을 덜 받게 하기 위해
-     * XYZ magnitude를 계산한 후
-     * 1g에서 벗어난 정도를 사용
+     * 유효한 구간 결과를 우선 사용한다.
+     * 아래 magnitude와 1g 차이는 구간 무효/구형 메시지의 fallback이며
+     * 진단 로그에도 출력한다.
      * ===================================================== */
     float ax = (float)sensor->accel_x;
 
@@ -1225,9 +1227,9 @@ EarthquakeLevel detect_earthquake(SensorData *sensor, JetsonData *jetson) {
  *    -> LOCK
  *    -> 0 degree
  *
- * CAUTION
- *    -> LOCK
- *    -> 0 degree
+ * 이 함수에 CAUTION을 직접 전달하면 LOCK 명령을 보낸다.
+ * 전체 제어 정책에서는 CAUTION이 기존 RELEASE 상태를 잠금으로 바꾸지 않으며
+ * WARNING 대기가 이미 시작됐다면 이를 유지할 수 있다.
  *
  * WARNING
  *    -> RELEASE
@@ -1260,11 +1262,11 @@ void control_servos(int sock, EarthquakeLevel level) {
  *
  * 정상:
  *
- * [PJS_STM]SERVOS@LOCK
+ * [CSH_ARD]SERVOS@LOCK
  *
  * 지진:
  *
- * [PJS_STM]SERVOS@RELEASE
+ * [CSH_ARD]SERVOS@RELEASE
  * ========================================================= */
 void send_servo_command(int sock, const char *command) {
     char send_buf[BUF_SIZE];

@@ -62,11 +62,6 @@ void LCD_backLightOn() {
 	LCD_sendDataToInterface();
 }
 
-void LCD_backLightOff() {
-	lcdData &= ~(1 << LCD_BL);
-	LCD_sendDataToInterface();
-}
-
 void LCD_cmdMode() {
 	lcdData &= ~(1 << LCD_RS); // 0 bit low
 	LCD_sendDataToInterface();
@@ -91,7 +86,6 @@ void LCD_enableLow() {
 	lcdData &= ~(1 << LCD_E); // 2 bit low
 	LCD_sendDataToInterface();
 }
-
 
 void LCD_sendDataToInterface() {
 	HAL_I2C_Master_Transmit(phLcdI2C, LCD_DEV_ADDR << 1, &lcdData, 1, 100);

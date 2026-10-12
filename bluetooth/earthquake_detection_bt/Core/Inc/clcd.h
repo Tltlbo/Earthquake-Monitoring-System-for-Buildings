@@ -13,7 +13,7 @@
 #define LCD_RS			0
 #define LCD_RW			1
 #define LCD_E			2
-#define LCD_BL			3 // back light'
+#define LCD_BL			3 // backlight
 
 #define LCD_4BIT_FUNC_SET	0x28
 #define LCD_DISPLAY_OFF		0x08
@@ -29,7 +29,6 @@ void LCD_writeCharData(uint8_t data);
 void LCD_sendData(uint8_t data);
 void LCD_sendByte(uint8_t data);
 void LCD_backLightOn();
-void LCD_backLightOff();
 void LCD_cmdMode();
 void LCD_charMode();
 void LCD_writeMode();

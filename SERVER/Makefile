@@ -1,27 +1,19 @@
-#CC:=arm-linux-gcc
-CC:=gcc
+CC := gcc
+CFLAGS += -D_REENTRANT -pthread
+LDLIBS += -pthread
 
-TARGET_SRV=iot_server
-OBJECT_SRV=$(TARGET_SRV).o 
+TARGET_SRV := iot_server
+OBJECT_SRV := $(TARGET_SRV).o
 
-#TARGET_CLN=iot_client
-#OBJECT_CLN=$(TARGET_CLN).o
+.PHONY: all clean
 
-#TARGET_SQL=sql_client
-#OBJECT_SQL=$(TARGET_SQL).o
+all: $(TARGET_SRV)
 
-#LDFLAGS=-D_REENTRANT -pthread -lmysqlclient
-LDFLAGS=-D_REENTRANT -pthread
+$(TARGET_SRV): $(OBJECT_SRV)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-all : $(TARGET_SRV) $(TARGET_CLN) $(TARGET_SQL)
+%.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-$(TARGET_SRV):$(OBJECT_SRV)
-	$(CC) -o $@ $(OBJECT_SRV) $(LDFLAGS)
-#$(TARGET_CLN):$(OBJECT_CLN)
-#	$(CC) -o $@ $(OBJECT_CLN) $(LDFLAGS)
-#$(TARGET_SQL):$(OBJECT_SQL)
-#	$(CC) -o $@ $(OBJECT_SQL) -D_REENTRANT -pthread -lmysqlclient
-%.o:%.c
-	$(CC) -c -o $@ $<
 clean:
-	rm -f *.o $(TARGET_SRV) #$(TARGET_CLN) $(TARGET_SQL)
+	rm -f $(OBJECT_SRV) $(TARGET_SRV)

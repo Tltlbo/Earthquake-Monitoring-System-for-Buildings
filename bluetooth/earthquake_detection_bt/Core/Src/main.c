@@ -345,14 +345,15 @@ void bluetooth_Event(void)
     }
 
     /*
-     * [PJS_STM]SENSOR@AX@AY@AZ@VIB@LEVEL
+     * 중계 후 수신: [PJS_SQL]SENSOR@AX@AY@AZ@SHOCK@LEVEL
+      * 송신 시 목적지 ID는 PJS_STM, 중계 후 앞부분은 발신자 ID다.
      *
-     * 0 : PJS_STM
+     * 0 : 발신자 ID (현재 PJS_SQL)
      * 1 : SENSOR
      * 2 : AX
      * 3 : AY
      * 4 : AZ
-     * 5 : VIB
+     * 5 : SHOCK
      * 6 : LEVEL
      */
     if (i < 7)
@@ -416,7 +417,7 @@ void bluetooth_Event(void)
 PUTCHAR_PROTOTYPE
 {
   /* Place your implementation of fputc here */
-  /* e.g. write a character to the USART6 and Loop until the end of transmission */
+  /* Debug printf output uses USART2. */
   HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 0xFFFF);
 
   return ch;

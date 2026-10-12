@@ -7,9 +7,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <pthread.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <dirent.h>
 #include <sys/time.h>
 #include <time.h>
 #include <errno.h>
@@ -19,7 +16,6 @@
 #define ID_SIZE 10
 #define ARR_CNT 5
 
-#define DEBUG
 typedef struct {
 		char fd;
 		char *from;
@@ -58,25 +54,6 @@ int main(int argc, char *argv[])
 		char *pToken;
 		char *pArray[ARR_CNT]={0};
 		char msg[BUF_SIZE];
-/*
-		CLIENT_INFO client_info[MAX_CLNT] = {{0,-1,"","1","PASSWD"}, \
-				{0,-1,"","2","PASSWD"},  {0,-1,"","3","PASSWD"}, \
-				{0,-1,"","4","PASSWD"},  {0,-1,"","5","PASSWD"}, \
-				{0,-1,"","6","PASSWD"},  {0,-1,"","7","PASSWD"}, \
-				{0,-1,"","8","PASSWD"},  {0,-1,"","9","PASSWD"}, \
-				{0,-1,"","10","PASSWD"},  {0,-1,"","11","PASSWD"}, \
-				{0,-1,"","12","PASSWD"},  {0,-1,"","13","PASSWD"}, \
-				{0,-1,"","14","PASSWD"},  {0,-1,"","15","PASSWD"}, \
-				{0,-1,"","16","PASSWD"},  {0,-1,"","17","PASSWD"}, \
-				{0,-1,"","18","PASSWD"},  {0,-1,"","19","PASSWD"}, \
-				{0,-1,"","20","PASSWD"},  {0,-1,"","21","PASSWD"}, \
-				{0,-1,"","22","PASSWD"},  {0,-1,"","23","PASSWD"}, \
-				{0,-1,"","24","PASSWD"},  {0,-1,"","25","PASSWD"}, \
-				{0,-1,"","26","PASSWD"},  {0,-1,"","27","PASSWD"}, \
-				{0,-1,"","28","PASSWD"},  {0,-1,"","29","PASSWD"}, \
-				{0,-1,"","30","PASSWD"},  {0,-1,"","31","PASSWD"}, \
-				{0,-1,"","KSH_SQL","PASSWD"}, {0,-1,"","HM_CON","PASSWD"}};
-*/
 		FILE * idFd = fopen("idpasswd.txt","r");
 		if(idFd == NULL)
 		{
@@ -92,17 +69,16 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 		do {
-			str_len = fscanf(idFd,"%s %s",id,pw);	
+			str_len = fscanf(idFd,"%s %s",id,pw);
 			if(str_len <= 0)
 				break;
 			client_info[i].fd=-1;
 			strcpy(client_info[i].id,id);
 			strcpy(client_info[i].pw,pw);
 			i++;
-//			printf("i:%d, %s %s\n",i,client_info[i].id,client_info[i].pw);
 			if(i > MAX_CLNT)
 			{
-				printf("error client_info pull(Max:%d)\n",MAX_CLNT);			
+				printf("error client_info pull(Max:%d)\n",MAX_CLNT);
 				break;
 			}
 		} while(1);
@@ -158,7 +134,7 @@ int main(int argc, char *argv[])
 						{
 								pArray[i] =  pToken;
 								if(i++ >= ARR_CNT)
-										break;	
+										break;
 								pToken = strtok(NULL,"[:]");
 						}
 						for(i=0;i<MAX_CLNT;i++)
@@ -173,16 +149,16 @@ int main(int argc, char *argv[])
 												shutdown(clnt_sock,SHUT_WR);
 #if 1   //for MCU
 												client_info[i].fd = -1;
-#endif  
+#endif
 												break;
 										}
-										if(!strcmp(client_info[i].pw,pArray[1])) 
+										if(!strcmp(client_info[i].pw,pArray[1]))
 										{
 
 												strcpy(client_info[i].ip,inet_ntoa(clnt_adr.sin_addr));
 												pthread_mutex_lock(&mutx);
-												client_info[i].index = i; 
-												client_info[i].fd = clnt_sock; 
+												client_info[i].index = i;
+												client_info[i].fd = clnt_sock;
 												clnt_cnt++;
 												pthread_mutex_unlock(&mutx);
 												sprintf(msg,"[%s] New connected! (ip:%s,fd:%d,sockcnt:%d)\n",pArray[0],inet_ntoa(clnt_adr.sin_addr),clnt_sock,clnt_cnt);
@@ -203,7 +179,7 @@ int main(int argc, char *argv[])
 								shutdown(clnt_sock,SHUT_WR);
 						}
 				}
-				else 
+				else
 						shutdown(clnt_sock,SHUT_WR);
 
 		}
@@ -229,18 +205,18 @@ void * clnt_connection(void *arg)
 		while(1)
 		{
 				memset(msg,0x0,sizeof(msg));
-				str_len = read(client_info->fd, msg, sizeof(msg)-1); 
+				str_len = read(client_info->fd, msg, sizeof(msg)-1);
 				if(str_len <= 0)
 						break;
 
 				msg[str_len] = '\0';
 				pToken = strtok(msg,"[:]");
-				i = 0; 
+				i = 0;
 				while(pToken != NULL)
 				{
 						pArray[i] =  pToken;
 						if(i++ >= ARR_CNT)
-								break;	
+								break;
 						pToken = strtok(NULL,"[:]");
 				}
 
@@ -276,7 +252,7 @@ void send_msg(MSG_INFO * msg_info, CLIENT_INFO * first_client_info)
 		if(!strcmp(msg_info->to,"ALLMSG"))
 		{
 				for(i=0;i<MAX_CLNT;i++)
-						if((first_client_info+i)->fd != -1)	
+						if((first_client_info+i)->fd != -1)
 								write((first_client_info+i)->fd, msg_info->msg, msg_info->len);
 		}
 		else if(!strcmp(msg_info->to,"IDLIST"))
@@ -287,7 +263,7 @@ void send_msg(MSG_INFO * msg_info, CLIENT_INFO * first_client_info)
 
 				for(i=0;i<MAX_CLNT;i++)
 				{
-						if((first_client_info+i)->fd != -1)	
+						if((first_client_info+i)->fd != -1)
 						{
 								strcat(idlist,(first_client_info+i)->id);
 								strcat(idlist," ");
@@ -305,7 +281,7 @@ void send_msg(MSG_INFO * msg_info, CLIENT_INFO * first_client_info)
 		}
 		else
 				for(i=0;i<MAX_CLNT;i++)
-						if((first_client_info+i)->fd != -1)	
+						if((first_client_info+i)->fd != -1)
 								if(!strcmp(msg_info->to,(first_client_info+i)->id))
 										write((first_client_info+i)->fd, msg_info->msg, msg_info->len);
 }

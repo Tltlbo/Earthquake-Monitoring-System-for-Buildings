@@ -23,7 +23,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include "esp.h"
 #include "vibration_detector.h"
 /* USER CODE END Includes */
@@ -35,15 +34,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#ifdef __GNUC__
-/* With GCC, small printf (option LD Linker->Libraries->Small printf
-   set to 'Yes') calls __io_putchar() */
-#define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
-#else
-#define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
-#endif /* __GNUC__ */
 #define ARR_CNT 6
-#define CMD_SIZE 50
 
 /* Servo */
 #define SERVO_MIN_PULSE         500
@@ -152,10 +143,6 @@ int main(void)
   MPU6050_Init();
 
   printf("Start main() - wifi\r\n");
-  ret = drv_uart_init();
-
-  printf("drv_uart_init ret = %d\r\n", ret);
-
   ret = drv_esp_init();
 
   printf("drv_esp_init ret = %d\r\n", ret);
@@ -219,10 +206,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uint32_t now = HAL_GetTick();
-
     Sensor_Sampling_Service();
-    now = HAL_GetTick();
+    uint32_t now = HAL_GetTick();
 
     /* Send at most 5 times/sec on changes; retain a 1-second heartbeat.
        Latch short events so a later quiet sample cannot erase them. */
@@ -681,7 +666,7 @@ void esp_event(char * recvBuf)
   {
       if(!strcmp(pArray[2], "RELEASE"))
       {
-          printf("EARTHQUAKE DETECTED\r\n");
+          printf("SERVO RELEASE COMMAND RECEIVED\r\n");
           Servo_All_Release();
           sprintf(sendBuf,
                   "[%s]SERVOS@RELEASE\n",
@@ -701,12 +686,10 @@ void esp_event(char * recvBuf)
   }
   else if(!strncmp(pArray[1]," New conn",8))
   {
-//	   printf("Debug : %s, %s\r\n",pArray[0],pArray[1]);
      return;
   }
   else if(!strncmp(pArray[1]," Already log",8))
   {
-// 	    printf("Debug : %s, %s\r\n",pArray[0],pArray[1]);
 	  esp_client_conn();
       return;
   }
@@ -747,7 +730,6 @@ void Servo_SetPulse(uint8_t servo, uint16_t pulse)
 
     if(pulse > SERVO_MAX_PULSE)
         pulse = SERVO_MAX_PULSE;
-
 
     switch(servo)
     {
@@ -808,10 +790,8 @@ void Servo_SetAngle(uint8_t servo, uint8_t angle)
 {
     uint16_t pulse;
 
-
     if(angle > 180)
         angle = 180;
-
 
     pulse = (uint16_t)
             map(angle,
@@ -819,7 +799,6 @@ void Servo_SetAngle(uint8_t servo, uint8_t angle)
                 180,
                 SERVO_MIN_PULSE,
                 SERVO_MAX_PULSE);
-
 
     Servo_SetPulse(servo, pulse);
 }

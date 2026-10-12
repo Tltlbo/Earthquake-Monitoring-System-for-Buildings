@@ -6,11 +6,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <pthread.h>
-#include <signal.h>
 
 #define BUF_SIZE 100
 #define NAME_SIZE 20
-#define ARR_CNT 6
 
 void * send_msg(void * arg);
 void * recv_msg(void * arg);
@@ -51,7 +49,6 @@ int main(int argc, char *argv[])
 	pthread_create(&snd_thread, NULL, send_msg, (void *)&sock);
 
 	pthread_join(snd_thread, &thread_return);
-	//	pthread_join(rcv_thread, &thread_return);
 
 	close(sock);
 	return 0;
@@ -60,7 +57,6 @@ int main(int argc, char *argv[])
 void * send_msg(void * arg)
 {
 	int *sock = (int *)arg;
-	int str_len;
 	int ret;
 	fd_set initset, newset;
 	struct timeval tv;
@@ -97,9 +93,9 @@ void * send_msg(void * arg)
 				return NULL;
 			}
 		}
-		if(ret == 0) 
+		if(ret == 0)
 		{
-			if(*sock == -1) 
+			if(*sock == -1)
 				return NULL;
 		}
 	}
@@ -107,17 +103,14 @@ void * send_msg(void * arg)
 
 void * recv_msg(void * arg)
 {
-	int * sock = (int *)arg;	
-	int i;
-	char *pToken;
-	char *pArray[ARR_CNT]={0};
+	int * sock = (int *)arg;
 
 	char name_msg[NAME_SIZE + BUF_SIZE +1];
 	int str_len;
 	while(1) {
 		memset(name_msg,0x0,sizeof(name_msg));
 		str_len = read(*sock, name_msg, NAME_SIZE + BUF_SIZE );
-		if(str_len <= 0) 
+		if(str_len <= 0)
 		{
 			*sock = -1;
 			return NULL;
@@ -125,19 +118,6 @@ void * recv_msg(void * arg)
 		name_msg[str_len] = 0;
 		fputs(name_msg, stdout);
 
-		/*   	pToken = strtok(name_msg,"[:]");
-			i = 0;
-			while(pToken != NULL)
-			{
-			pArray[i] =  pToken;
-			if(i++ >= ARR_CNT)
-			break;
-			pToken = strtok(NULL,"[:]");
-			}
-
-		//		printf("id:%s, msg:%s,%s,%s,%s\n",pArray[0],pArray[1],pArray[2],pArray[3],pArray[4]);
-		printf("id:%s, msg:%s\n",pArray[0],pArray[1]);
-		*/
 	}
 }
 
