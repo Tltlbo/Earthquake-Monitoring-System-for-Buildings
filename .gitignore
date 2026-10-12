@@ -1,3 +1,7 @@
 .metadata/
 *.pdom
 *.log
+
+# STM32CubeIDE build artifacts
+/hardware/earthquake_detection/Debug/
+/bluetooth/earthquake_detection_bt/Debug/
