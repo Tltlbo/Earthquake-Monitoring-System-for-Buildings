@@ -1,0 +1,3 @@
+0 Warning
+1 Caution
+2 Safety
