@@ -6,7 +6,7 @@
 
 > 관제 단계는 모형과 입력 데이터를 대상으로 한 규칙 기반 이상 판정입니다. 실제 지진 원인 확정이나 검증된 건물 보호 성능을 의미하지 않습니다.
 > 
-<img width="512" height="1024" alt="IMG_3866" src="https://github.com/user-attachments/assets/17955408-5984-49a5-b42f-099b2897cde3" />
+<img width="300" height="600" alt="IMG_3866" src="https://github.com/user-attachments/assets/17955408-5984-49a5-b42f-099b2897cde3" />
 
 ---
 
@@ -158,7 +158,7 @@ Jetson과 카메라를 사용합니다. `VideoCapture(0)`으로 영상을 얻고
 
 ---
 ## 시연 영상
-<img width="500" height="570" alt="IMG_3843" src="https://github.com/user-attachments/assets/c3aa2c4f-b4e6-4622-a161-7aaecd12e91c" />
+https://youtube.com/shorts/kzwlfjz37vQ
 ---
 
 ## 📡 통신 메시지 (Message Protocol)
