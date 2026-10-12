@@ -5,7 +5,8 @@
 센서 보드는 약 **10ms 간격으로 가속도를 수집**하고, 최근 구간의 **최대–최소 차이(P2P)와 RMS**를 계산합니다. 중앙 제어 클라이언트는 이를 영상 상태와 결합해 `SAFETY / CAUTION / WARNING` 단계를 결정합니다.
 
 > 관제 단계는 모형과 입력 데이터를 대상으로 한 규칙 기반 이상 판정입니다. 실제 지진 원인 확정이나 검증된 건물 보호 성능을 의미하지 않습니다.
-
+> 
+<img width="3024" height="4032" alt="IMG_3866" src="https://github.com/user-attachments/assets/17955408-5984-49a5-b42f-099b2897cde3" />
 ---
 
 ## 👥 팀원 및 역할 분담 (Team Roles)
@@ -152,6 +153,10 @@ Jetson과 카메라를 사용합니다. `VideoCapture(0)`으로 영상을 얻고
 - SAFETY는 기본 3초 간격 또는 단계 변경 시 저장하고, CAUTION/WARNING은 통합 처리마다 저장합니다.
 - DB 저장 성공 후 표시 데이터를 Bluetooth 경로로 전달합니다.
 - DB의 `gyro_x/y/z`는 **가속도 raw 값**, `motor1~8`은 **명령 각도**입니다. 현재 통합 최종 단계와 P2P/RMS를 저장하는 컬럼은 없습니다.
+
+---
+## 시연 영상
+<img width="90" height="160" alt="IMG_3843 (1)" src="https://github.com/user-attachments/assets/cbcc980b-669a-402a-96e8-51deef5b7b4a" />
 
 ---
 
