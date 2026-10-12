@@ -78,6 +78,11 @@ typedef struct
     int16_t accel_z;
 
     int vibration;
+    /* Optional STM32 window summary; legacy packets still work. */
+    int window_p2p;
+    int window_rms;
+    int window_abnormal;
+    int window_valid;
 
     double timestamp;
 
@@ -783,6 +788,26 @@ void process_sensor(
     latest_sensor.accel_z = (int16_t)atoi(pArray[4]);
 
     latest_sensor.vibration = atoi(pArray[5]);
+    latest_sensor.window_valid = 0;
+    latest_sensor.window_p2p = 0;
+    latest_sensor.window_rms = 0;
+    latest_sensor.window_abnormal = 0;
+    if (count >= 10) {
+        int p2p, rms, abnormal, valid;
+        char extra;
+        /* Accept only complete integer fields, within raw-count bounds. */
+        if (sscanf(pArray[6], "%d%c", &p2p, &extra) == 1 &&
+            sscanf(pArray[7], "%d%c", &rms, &extra) == 1 &&
+            sscanf(pArray[8], "%d%c", &abnormal, &extra) == 1 &&
+            sscanf(pArray[9], "%d%c", &valid, &extra) == 1 &&
+            p2p >= 0 && p2p <= 65535 && rms >= 0 && rms <= 65535 &&
+            (abnormal == 0 || abnormal == 1) && valid == 1) {
+            latest_sensor.window_p2p = p2p;
+            latest_sensor.window_rms = rms;
+            latest_sensor.window_abnormal = abnormal;
+            latest_sensor.window_valid = 1;
+        }
+    }
 
     latest_sensor.timestamp = get_time_sec();
 
@@ -1136,7 +1161,11 @@ EarthquakeLevel detect_earthquake(SensorData *sensor, JetsonData *jetson) {
             MPU6050_1G_RAW
         );
 
-    if(accel_delta >= ACCEL_WARNING_THRESHOLD) {
+    if(sensor->window_valid) {
+        /* Do not double-count instantaneous acceleration and the same vibration. */
+        if(sensor->window_abnormal) score += 4;
+    }
+    else if(accel_delta >= ACCEL_WARNING_THRESHOLD) {
         score += 4;
     }
 
@@ -1163,6 +1192,9 @@ EarthquakeLevel detect_earthquake(SensorData *sensor, JetsonData *jetson) {
     printf("Accel Mag     : %.3f\n", accel_magnitude);
 
     printf("Accel Delta   : %.3f\n", accel_delta);
+    if(sensor->window_valid)
+        printf("Window P2P/RMS: %d / %d (abnormal=%d)\n",
+               sensor->window_p2p, sensor->window_rms, sensor->window_abnormal);
 
     printf("Score         : %d\n", score);
 

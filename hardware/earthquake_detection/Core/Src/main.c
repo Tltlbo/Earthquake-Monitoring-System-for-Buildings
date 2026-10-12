@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "esp.h"
+#include "vibration_detector.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -69,6 +70,14 @@ UART_HandleTypeDef huart6;
 /* USER CODE BEGIN PV */
 extern cb_data_t cb_data;
 uint32_t sensorTick = 0;
+static VibrationDetector vibrationDetector;
+static VibrationResult pendingVibration;
+static VibrationResult transmittedVibration;
+static uint32_t sampleTick;
+static uint8_t sensorSamplingEnabled;
+static uint8_t sensorSampleAvailable;
+static uint8_t reportedAbnormal;
+static uint8_t vibrationEventPending;
 
 int16_t accelX;
 int16_t accelY;
@@ -92,6 +101,7 @@ void MPU6050_Init(void);
 uint8_t MPU6050_Read(void);
 
 void Send_Sensor_Data(void);
+void Sensor_Sampling_Service(void);
 
 void Servo_SetPulse(uint8_t servo, uint16_t pulse);
 void Servo_SetAngle(uint8_t servo, uint8_t angle);
@@ -197,6 +207,9 @@ int main(void)
   Servo_All_Lock();
   HAL_Delay(700);
   printf("Servo startup test complete!\r\n");
+  Vibration_Init(&vibrationDetector);
+  sampleTick = sensorTick = HAL_GetTick();
+  sensorSamplingEnabled = 1;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -208,14 +221,27 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
 
-    // 1. 센서 전송 주기를 1000ms(1초)로 설정 (100ms는 너무 빨라 명령 수신을 방해함)
-    if((now - sensorTick) >= 1000)
+    Sensor_Sampling_Service();
+    now = HAL_GetTick();
+
+    /* Send at most 5 times/sec on changes; retain a 1-second heartbeat.
+       Latch short events so a later quiet sample cannot erase them. */
+    if(sensorSampleAvailable &&
+       (uint32_t)(now - sampleTick) <= VIBRATION_MAX_GAP_MS &&
+       (uint32_t)(now - vibrationDetector.last_tick) <= VIBRATION_MAX_GAP_MS &&
+       ((uint32_t)(now - sensorTick) >= 1000U ||
+        ((uint32_t)(now - sensorTick) >= 200U &&
+         (vibrationEventPending ||
+          (vibrationDetector.result.valid &&
+           vibrationDetector.result.abnormal != reportedAbnormal)))))
     {
         sensorTick = now;
-        if(MPU6050_Read())
-        {
-            Send_Sensor_Data();
-        }
+        transmittedVibration = vibrationEventPending ? pendingVibration :
+                                vibrationDetector.result;
+        reportedAbnormal = transmittedVibration.abnormal;
+        vibrationEventPending = 0;
+        /* Sampling may continue inside the ESP wait; keep this report immutable. */
+        Send_Sensor_Data();
     }
 
     // 2. Wi-Fi 서버 제어 명령(+IPD) 수신 처리
@@ -547,6 +573,33 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void Sensor_Sampling_Service(void)
+{
+    uint32_t now = HAL_GetTick();
+    if (!sensorSamplingEnabled ||
+        (uint32_t)(now - sampleTick) < VIBRATION_SAMPLE_MS)
+        return;
+    sampleTick = now;
+    if (!MPU6050_Read())
+        return;
+    sensorSampleAvailable = 1;
+    Vibration_Update(&vibrationDetector, now, accelX, accelY, accelZ);
+    if (vibrationDetector.result.valid && vibrationDetector.result.abnormal &&
+        !reportedAbnormal) {
+        if (!vibrationEventPending ||
+            vibrationDetector.result.p2p > pendingVibration.p2p ||
+            vibrationDetector.result.rms > pendingVibration.rms)
+            pendingVibration = vibrationDetector.result;
+        vibrationEventPending = 1;
+    }
+}
+
+/* Cooperative hook: no Wi-Fi calls here, so ESP waits cannot recurse. */
+void esp_background_service(void)
+{
+    Sensor_Sampling_Service();
+}
+
 #define MPU6050_ADDR        (0x68 << 1)
 #define MPU6050_PWR_MGMT_1 0x6B
 #define MPU6050_ACCEL_XOUT  0x3B
@@ -581,7 +634,7 @@ uint8_t MPU6050_Read(void)
                         I2C_MEMADD_SIZE_8BIT,
                         buf,
                         6,
-                        100) != HAL_OK)
+                        10) != HAL_OK)
     {
         printf("MPU6050 Read Error\r\n");
         return 0;
@@ -666,17 +719,21 @@ void esp_event(char * recvBuf)
 
 void Send_Sensor_Data(void)
 {
-    char sendBuf[MAX_UART_COMMAND_LEN];
+    char sendBuf[128]; /* Extended window summary can exceed the legacy 64 bytes. */
     uint8_t shock;
 
     shock = (uint8_t)HAL_GPIO_ReadPin(SHOCK_GPIO_Port, SHOCK_Pin);
 
-    sprintf(sendBuf,
-            "[PJS_SQL]SENSOR@%d@%d@%d@%d\n",
+    snprintf(sendBuf, sizeof(sendBuf),
+            "[PJS_SQL]SENSOR@%d@%d@%d@%d@%lu@%lu@%u@%u\n",
             accelX,
             accelY,
             accelZ,
-            shock);
+            shock,
+            (unsigned long)transmittedVibration.p2p,
+            (unsigned long)transmittedVibration.rms,
+            (unsigned)transmittedVibration.abnormal,
+            (unsigned)transmittedVibration.valid);
 
     esp_send_data(sendBuf);
 
